@@ -20,12 +20,14 @@
 8. [Data Models](#data-models)
 9. [Examples](#examples)
 10. [SDKs & Libraries](#sdks--libraries)
+11. [Developer API Dependencies](#developer-api-dependencies)
 
 ---
 
 ## Overview
 
 The Stellar Unified Price Oracle API provides real-time and historical price data aggregated from multiple oracle sources:
+
 - **Chainlink**
 - **Redstone**
 - **Band Protocol**
@@ -48,6 +50,10 @@ All prices are calculated as weighted aggregates with confidence scores indicati
 
 **No authentication required** for public endpoints. The API is open and does not require API keys or credentials.
 
+The developer usage, request replay, and feed-schema compatibility features are not
+available in this API contract. Their required backend capabilities are documented
+in [Developer API Dependencies](developer-api-dependencies.md).
+
 ### Version Negotiation
 
 To ensure compatibility, send the `Accept-Version` header with all requests:
@@ -57,6 +63,7 @@ Accept-Version: 1.0.0
 ```
 
 If the server cannot satisfy the requested version, it will respond with:
+
 - **406 Not Acceptable** if a lower version is requested than available
 - **409 Conflict** if an incompatible version is requested
 - Response includes `X-API-Version` header with the server's version
@@ -67,11 +74,11 @@ If the server cannot satisfy the requested version, it will respond with:
 
 All endpoints are rate-limited per IP address. Rate limit metadata is included in response headers:
 
-| Header | Description | Example |
-|--------|-------------|---------|
-| `X-RateLimit-Limit` | Max requests in window | `100` |
-| `X-RateLimit-Remaining` | Requests remaining | `95` |
-| `X-RateLimit-Reset` | Reset time (Unix timestamp, seconds) | `1693489200` |
+| Header                  | Description                          | Example      |
+| ----------------------- | ------------------------------------ | ------------ |
+| `X-RateLimit-Limit`     | Max requests in window               | `100`        |
+| `X-RateLimit-Remaining` | Requests remaining                   | `95`         |
+| `X-RateLimit-Reset`     | Reset time (Unix timestamp, seconds) | `1693489200` |
 
 ### Rate Limit Behavior
 
@@ -119,28 +126,28 @@ All REST endpoints return JSON responses. Successful responses follow this struc
 
 ### HTTP Status Codes
 
-| Status | Meaning | Retry? | Example |
-|--------|---------|--------|---------|
-| 200 | Success | No | Price data retrieved |
-| 400 | Bad Request | No | Invalid pair format |
-| 401 | Unauthorized | No | (Not used; API is public) |
-| 404 | Not Found | No | Asset pair not tracked |
-| 406 | Not Acceptable | No | Incompatible API version |
-| 409 | Conflict | No | API version mismatch |
-| 429 | Rate Limited | Yes | Too many requests |
-| 500 | Server Error | Yes | Temporary server issue |
-| 502 | Bad Gateway | Yes | Upstream service down |
-| 503 | Service Unavailable | Yes | Server maintenance |
+| Status | Meaning             | Retry? | Example                   |
+| ------ | ------------------- | ------ | ------------------------- |
+| 200    | Success             | No     | Price data retrieved      |
+| 400    | Bad Request         | No     | Invalid pair format       |
+| 401    | Unauthorized        | No     | (Not used; API is public) |
+| 404    | Not Found           | No     | Asset pair not tracked    |
+| 406    | Not Acceptable      | No     | Incompatible API version  |
+| 409    | Conflict            | No     | API version mismatch      |
+| 429    | Rate Limited        | Yes    | Too many requests         |
+| 500    | Server Error        | Yes    | Temporary server issue    |
+| 502    | Bad Gateway         | Yes    | Upstream service down     |
+| 503    | Service Unavailable | Yes    | Server maintenance        |
 
 ### Common Error Codes
 
-| Code | HTTP | Description | Solution |
-|------|------|-------------|----------|
-| `BAD_REQUEST` | 400 | Invalid parameters | Check pair format, query parameters |
-| `NOT_FOUND` | 404 | Asset pair not tracked | Verify asset pair is valid |
-| `RATE_LIMITED` | 429 | Too many requests | Wait `X-RateLimit-Reset` seconds |
-| `API_VERSION_MISMATCH` | 406/409 | Version incompatibility | Update to server version |
-| `SERVER_ERROR` | 500+ | Internal error | Retry with backoff |
+| Code                   | HTTP    | Description             | Solution                            |
+| ---------------------- | ------- | ----------------------- | ----------------------------------- |
+| `BAD_REQUEST`          | 400     | Invalid parameters      | Check pair format, query parameters |
+| `NOT_FOUND`            | 404     | Asset pair not tracked  | Verify asset pair is valid          |
+| `RATE_LIMITED`         | 429     | Too many requests       | Wait `X-RateLimit-Reset` seconds    |
+| `API_VERSION_MISMATCH` | 406/409 | Version incompatibility | Update to server version            |
+| `SERVER_ERROR`         | 500+    | Internal error          | Retry with backoff                  |
 
 ---
 
@@ -156,9 +163,9 @@ GET /api/prices
 
 #### Query Parameters
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pairs` | string (comma-separated) | No | Filter by specific pairs (e.g., `?pairs=BTC/USD,ETH/USD`) |
+| Parameter | Type                     | Required | Description                                               |
+| --------- | ------------------------ | -------- | --------------------------------------------------------- |
+| `pairs`   | string (comma-separated) | No       | Filter by specific pairs (e.g., `?pairs=BTC/USD,ETH/USD`) |
 
 #### Response
 
@@ -166,7 +173,7 @@ GET /api/prices
 [
   {
     "assetPair": "BTC/USD",
-    "price": 43250.50,
+    "price": 43250.5,
     "timestamp": 1693489200000,
     "confidence": 0.98,
     "sources": ["chainlink", "redstone", "band"]
@@ -192,7 +199,7 @@ curl -X GET "https://api.stellar-price-oracle.example.com/api/prices" \
 
 ```javascript
 const response = await fetch('https://api.stellar-price-oracle.example.com/api/prices', {
-  headers: { 'Accept-Version': '1.0.0' }
+  headers: { 'Accept-Version': '1.0.0' },
 })
 const prices = await response.json()
 console.log(prices)
@@ -223,16 +230,16 @@ GET /api/prices/:pair
 
 #### Path Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `pair` | string | Asset pair (e.g., `BTC/USD`, `XLM/USD`, `ETH/EUR`) |
+| Parameter | Type   | Description                                        |
+| --------- | ------ | -------------------------------------------------- |
+| `pair`    | string | Asset pair (e.g., `BTC/USD`, `XLM/USD`, `ETH/EUR`) |
 
 #### Response
 
 ```json
 {
   "assetPair": "BTC/USD",
-  "price": 43250.50,
+  "price": 43250.5,
   "timestamp": 1693489200000,
   "confidence": 0.98,
   "sources": ["chainlink", "redstone", "band"]
@@ -274,16 +281,16 @@ GET /api/prices/:pair/history
 
 #### Path Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `pair` | string | Asset pair (e.g., `BTC/USD`) |
+| Parameter | Type   | Description                  |
+| --------- | ------ | ---------------------------- |
+| `pair`    | string | Asset pair (e.g., `BTC/USD`) |
 
 #### Query Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limit` | integer | 100 | Number of records (max 500) |
-| `offset` | integer | 0 | Pagination offset |
+| Parameter | Type    | Default | Description                 |
+| --------- | ------- | ------- | --------------------------- |
+| `limit`   | integer | 100     | Number of records (max 500) |
+| `offset`  | integer | 0       | Pagination offset           |
 
 #### Response
 
@@ -292,7 +299,7 @@ GET /api/prices/:pair/history
   "pair": "BTC/USD",
   "history": [
     {
-      "price": 42800.00,
+      "price": 42800.0,
       "timestamp": 1693485600000,
       "confidence": 0.97,
       "sources": ["chainlink", "redstone"]
@@ -319,7 +326,7 @@ curl -X GET "https://api.stellar-price-oracle.example.com/api/prices/BTC/USD/his
 ```javascript
 const response = await fetch(
   'https://api.stellar-price-oracle.example.com/api/prices/BTC/USD/history?limit=50&offset=0',
-  { headers: { 'Accept-Version': '1.0.0' } }
+  { headers: { 'Accept-Version': '1.0.0' } },
 )
 const { pair, history } = await response.json()
 console.log(`${pair} history (${history.length} entries):`, history)
@@ -333,7 +340,7 @@ async function* getHistoryPages(pair, pageSize = 100) {
   while (true) {
     const res = await fetch(
       `https://api.stellar-price-oracle.example.com/api/prices/${encodeURIComponent(pair)}/history?limit=${pageSize}&offset=${offset}`,
-      { headers: { 'Accept-Version': '1.0.0' } }
+      { headers: { 'Accept-Version': '1.0.0' } },
     )
     const { history } = await res.json()
     if (history.length === 0) break
@@ -368,10 +375,10 @@ POST /api/prices/history/batch
 
 #### Query Parameters (Optional)
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limit` | integer | 100 | Records per pair (max 500) |
-| `offset` | integer | 0 | Pagination offset |
+| Parameter | Type    | Default | Description                |
+| --------- | ------- | ------- | -------------------------- |
+| `limit`   | integer | 100     | Records per pair (max 500) |
+| `offset`  | integer | 0       | Pagination offset          |
 
 #### Response
 
@@ -381,7 +388,7 @@ POST /api/prices/history/batch
     "pair": "BTC/USD",
     "history": [
       {
-        "price": 42800.00,
+        "price": 42800.0,
         "timestamp": 1693485600000,
         "confidence": 0.97,
         "sources": ["chainlink", "redstone"]
@@ -392,7 +399,7 @@ POST /api/prices/history/batch
     "pair": "ETH/USD",
     "history": [
       {
-        "price": 2140.50,
+        "price": 2140.5,
         "timestamp": 1693485600000,
         "confidence": 0.96,
         "sources": ["chainlink", "band"]
@@ -416,17 +423,14 @@ curl -X POST "https://api.stellar-price-oracle.example.com/api/prices/history/ba
 #### JavaScript Example
 
 ```javascript
-const response = await fetch(
-  'https://api.stellar-price-oracle.example.com/api/prices/history/batch',
-  {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept-Version': '1.0.0'
-    },
-    body: JSON.stringify({ pairs: ['BTC/USD', 'ETH/USD', 'XLM/USD'] })
-  }
-)
+const response = await fetch('https://api.stellar-price-oracle.example.com/api/prices/history/batch', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Accept-Version': '1.0.0',
+  },
+  body: JSON.stringify({ pairs: ['BTC/USD', 'ETH/USD', 'XLM/USD'] }),
+})
 const historyData = await response.json()
 console.log(historyData)
 ```
@@ -467,10 +471,10 @@ GET /health
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field    | Type   | Description                                       |
+| -------- | ------ | ------------------------------------------------- |
 | `status` | string | Server status: `healthy`, `degraded`, `unhealthy` |
-| `uptime` | number | Server uptime in seconds |
+| `uptime` | number | Server uptime in seconds                          |
 
 #### HTTP Example
 
@@ -512,10 +516,12 @@ const ws = new WebSocket('wss://api.stellar-price-oracle.example.com/ws')
 ws.onopen = () => {
   console.log('Connected to price feed')
   // Subscribe to asset pairs
-  ws.send(JSON.stringify({
-    action: 'subscribe',
-    assetPairs: ['BTC/USD', 'ETH/USD']
-  }))
+  ws.send(
+    JSON.stringify({
+      action: 'subscribe',
+      assetPairs: ['BTC/USD', 'ETH/USD'],
+    }),
+  )
 }
 
 ws.onmessage = (event) => {
@@ -564,7 +570,7 @@ Received when a price changes.
 {
   "type": "price_update",
   "assetPair": "BTC/USD",
-  "price": 43250.50,
+  "price": 43250.5,
   "timestamp": 1693489200000,
   "confidence": 0.98,
   "sources": ["chainlink", "redstone", "band"]
@@ -607,7 +613,7 @@ class PriceFeedClient {
   onOpen() {
     console.log('Connected to price feed')
     this.reconnectAttempt = 0
-    
+
     // Re-subscribe to previously subscribed pairs
     if (this.subscribedPairs.size > 0) {
       this.subscribe([...this.subscribedPairs])
@@ -618,7 +624,7 @@ class PriceFeedClient {
     try {
       const msg = JSON.parse(event.data)
       if (msg.type === 'price_update') {
-        this.handlers.forEach(handler => handler(msg))
+        this.handlers.forEach((handler) => handler(msg))
       }
     } catch (error) {
       console.error('Failed to parse message:', error)
@@ -636,21 +642,25 @@ class PriceFeedClient {
 
   subscribe(pairs) {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        action: 'subscribe',
-        assetPairs: pairs
-      }))
-      pairs.forEach(p => this.subscribedPairs.add(p))
+      this.ws.send(
+        JSON.stringify({
+          action: 'subscribe',
+          assetPairs: pairs,
+        }),
+      )
+      pairs.forEach((p) => this.subscribedPairs.add(p))
     }
   }
 
   unsubscribe(pairs) {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        action: 'unsubscribe',
-        assetPairs: pairs
-      }))
-      pairs.forEach(p => this.subscribedPairs.delete(p))
+      this.ws.send(
+        JSON.stringify({
+          action: 'unsubscribe',
+          assetPairs: pairs,
+        }),
+      )
+      pairs.forEach((p) => this.subscribedPairs.delete(p))
     }
   }
 
@@ -668,7 +678,7 @@ class PriceFeedClient {
     const delay = Math.random() * Math.min(1000 * Math.pow(2, this.reconnectAttempt), 30000)
     this.reconnectAttempt++
     console.log(`Reconnecting in ${Math.round(delay)}ms (attempt ${this.reconnectAttempt}/${this.maxRetries})`)
-    
+
     setTimeout(() => this.connect(), delay)
   }
 
@@ -705,15 +715,16 @@ The core price snapshot.
 
 ```typescript
 interface PriceData {
-  assetPair: string    // e.g., "BTC/USD"
-  price: number        // Aggregated price
-  timestamp: number    // Unix timestamp (milliseconds)
-  confidence: number   // 0.0 (no confidence) to 1.0 (certain)
-  sources: string[]    // ["chainlink", "redstone", "band", "reflector"]
+  assetPair: string // e.g., "BTC/USD"
+  price: number // Aggregated price
+  timestamp: number // Unix timestamp (milliseconds)
+  confidence: number // 0.0 (no confidence) to 1.0 (certain)
+  sources: string[] // ["chainlink", "redstone", "band", "reflector"]
 }
 ```
 
 **Confidence Score:**
+
 - `0.0–0.3`: Low confidence (use with caution)
 - `0.3–0.7`: Medium confidence (typical)
 - `0.7–1.0`: High confidence (recommended)
@@ -724,10 +735,10 @@ A single historical price point.
 
 ```typescript
 interface PriceHistoryEntry {
-  price: number        // Price at this timestamp
-  timestamp: number    // Unix timestamp (milliseconds)
-  confidence: number   // Confidence at this point
-  sources: string[]    // Sources active at this time
+  price: number // Price at this timestamp
+  timestamp: number // Unix timestamp (milliseconds)
+  confidence: number // Confidence at this point
+  sources: string[] // Sources active at this time
 }
 ```
 
@@ -737,8 +748,8 @@ Paginated history for one pair.
 
 ```typescript
 interface PriceHistoryResponse {
-  pair: string                    // Asset pair
-  history: PriceHistoryEntry[]    // Ordered entries (oldest first)
+  pair: string // Asset pair
+  history: PriceHistoryEntry[] // Ordered entries (oldest first)
 }
 ```
 
@@ -754,7 +765,7 @@ interface WsPriceUpdate {
   timestamp: number
   confidence: number
   sources: string[]
-  seq?: number        // Optional: monotonic sequence number
+  seq?: number // Optional: monotonic sequence number
 }
 ```
 
@@ -767,20 +778,19 @@ interface WsPriceUpdate {
 ```javascript
 async function getCurrentBtcPrice() {
   try {
-    const response = await fetch(
-      'https://api.stellar-price-oracle.example.com/api/prices/BTC/USD',
-      { headers: { 'Accept-Version': '1.0.0' } }
-    )
-    
+    const response = await fetch('https://api.stellar-price-oracle.example.com/api/prices/BTC/USD', {
+      headers: { 'Accept-Version': '1.0.0' },
+    })
+
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
     }
-    
+
     const price = await response.json()
     console.log(`BTC/USD: $${price.price}`)
     console.log(`Confidence: ${(price.confidence * 100).toFixed(1)}%`)
     console.log(`Sources: ${price.sources.join(', ')}`)
-    
+
     return price
   } catch (error) {
     console.error('Failed to fetch price:', error)
@@ -799,22 +809,22 @@ async function buildPriceChart(pair) {
   while (true) {
     const response = await fetch(
       `https://api.stellar-price-oracle.example.com/api/prices/${encodeURIComponent(pair)}/history?limit=${limit}&offset=${offset}`,
-      { headers: { 'Accept-Version': '1.0.0' } }
+      { headers: { 'Accept-Version': '1.0.0' } },
     )
     const { history } = await response.json()
-    
+
     if (history.length === 0) break
-    
+
     allHistory = [...history, ...allHistory] // Prepend for chronological order
     offset += limit
-    
+
     if (history.length < limit) break // Last page
   }
 
-  return allHistory.map(entry => ({
+  return allHistory.map((entry) => ({
     date: new Date(entry.timestamp),
     price: entry.price,
-    confidence: entry.confidence
+    confidence: entry.confidence,
   }))
 }
 
@@ -838,7 +848,7 @@ class PriceMonitor {
   async start() {
     // Try WebSocket first
     this.connectWebSocket()
-    
+
     // Fallback to REST polling if WebSocket fails
     await this.pollRest()
   }
@@ -846,18 +856,20 @@ class PriceMonitor {
   connectWebSocket() {
     try {
       this.ws = new WebSocket('wss://api.stellar-price-oracle.example.com/ws')
-      
+
       this.ws.onopen = () => {
         console.log('Connected to WebSocket')
-        this.ws.send(JSON.stringify({
-          action: 'subscribe',
-          assetPairs: this.pairs
-        }))
-        
+        this.ws.send(
+          JSON.stringify({
+            action: 'subscribe',
+            assetPairs: this.pairs,
+          }),
+        )
+
         // Clear REST polling since WebSocket is active
         clearInterval(this.restTimer)
       }
-      
+
       this.ws.onmessage = (event) => {
         const update = JSON.parse(event.data)
         if (update.type === 'price_update') {
@@ -865,7 +877,7 @@ class PriceMonitor {
           this.onPriceUpdate(update)
         }
       }
-      
+
       this.ws.onclose = () => {
         console.log('WebSocket disconnected, falling back to REST')
         this.pollRest()
@@ -880,12 +892,11 @@ class PriceMonitor {
     this.restTimer = setInterval(async () => {
       try {
         const params = `?pairs=${this.pairs.join(',')}`
-        const response = await fetch(
-          `https://api.stellar-price-oracle.example.com/api/prices${params}`,
-          { headers: { 'Accept-Version': '1.0.0' } }
-        )
+        const response = await fetch(`https://api.stellar-price-oracle.example.com/api/prices${params}`, {
+          headers: { 'Accept-Version': '1.0.0' },
+        })
         const prices = await response.json()
-        prices.forEach(p => {
+        prices.forEach((p) => {
           this.prices.set(p.assetPair, p)
           this.onPriceUpdate(p)
         })
@@ -920,12 +931,12 @@ monitor.start()
 
 ### Official SDKs
 
-| Language | Repository | Status |
-|----------|-----------|--------|
-| JavaScript/TypeScript | `stellar-oracle/sdk-js` | Active |
-| Python | `stellar-oracle/sdk-python` | Active |
-| Go | `stellar-oracle/sdk-go` | Active |
-| Rust | `stellar-oracle/sdk-rust` | Active |
+| Language              | Repository                  | Status |
+| --------------------- | --------------------------- | ------ |
+| JavaScript/TypeScript | `stellar-oracle/sdk-js`     | Active |
+| Python                | `stellar-oracle/sdk-python` | Active |
+| Go                    | `stellar-oracle/sdk-go`     | Active |
+| Rust                  | `stellar-oracle/sdk-rust`   | Active |
 
 ### Community Libraries
 
@@ -988,6 +999,7 @@ for pair_history in batch:
 **Problem:** API returns 429 Too Many Requests
 
 **Solution:**
+
 1. Check `X-RateLimit-Remaining` header
 2. Wait until `X-RateLimit-Reset` timestamp
 3. Implement exponential backoff with jitter
@@ -998,6 +1010,7 @@ for pair_history in batch:
 **Problem:** Asset pair returns 404
 
 **Solution:**
+
 1. Verify pair format (e.g., `BTC/USD`, not `bitcoin/usd`)
 2. Confirm pair is tracked by the oracle
 3. Use `/api/prices` to list all available pairs
@@ -1007,6 +1020,7 @@ for pair_history in batch:
 **Problem:** WebSocket frequently disconnects
 
 **Solution:**
+
 1. Check network stability
 2. Implement reconnection with exponential backoff
 3. Monitor heartbeat timeouts
@@ -1017,6 +1031,7 @@ for pair_history in batch:
 **Problem:** Prices seem outdated
 
 **Solution:**
+
 1. Check `timestamp` field for recency
 2. Monitor `confidence` score (low confidence may indicate data staleness)
 3. Check multiple sources in `sources` array
