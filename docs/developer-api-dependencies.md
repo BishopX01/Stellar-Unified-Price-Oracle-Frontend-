@@ -45,3 +45,16 @@ time window, grouped by endpoint and response category, with the window and
 data freshness identifiable. It must not expose API keys, raw request bodies,
 or unrelated users' activity. Empty history, stale data, and unavailable
 aggregates must be distinguishable.
+
+## Quota forecast from recent API-key activity (#806)
+
+**Status:** Blocked on per-key quota policy and timestamped usage history.
+
+The current rate-limit headers describe an individual request's IP-based
+limit, not an API key's quota or recent activity, and must not be used as a
+substitute. The backend must provide authenticated, key-owner-scoped usage
+history with timestamps and a defined quota limit, quota window, and reset
+time. This is the minimum data needed to present observed usage separately
+from a forecast. The UI must identify the forecast period and handle
+insufficient history, a changed quota, stale data, and unavailable activity
+without presenting a fabricated projection.
