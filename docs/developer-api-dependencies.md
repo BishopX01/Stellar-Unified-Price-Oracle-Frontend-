@@ -33,3 +33,15 @@ diagnostic metadata. Credentials, signing material, and other sensitive
 headers or values must be excluded or redacted; the client must not replay
 arbitrary user-supplied requests or rely on a UI-only read-only restriction.
 The contract must distinguish unavailable records and replay errors.
+
+## Usage breakdown by endpoint and response category (#805)
+
+**Status:** Blocked on authenticated, per-key usage aggregates.
+
+The current API is unauthenticated and exposes only rate-limit headers for an
+individual response; those headers cannot provide API-key usage history. The
+backend must supply an authenticated, key-owner-scoped aggregate over a defined
+time window, grouped by endpoint and response category, with the window and
+data freshness identifiable. It must not expose API keys, raw request bodies,
+or unrelated users' activity. Empty history, stale data, and unavailable
+aggregates must be distinguishable.
