@@ -19,3 +19,17 @@ they are compatible, and describe any breaking changes. Unknown versions and
 unavailable or stale results must be distinguishable from a successful
 compatibility check. The frontend must not infer compatibility from the
 current schema alone or initiate an upgrade automatically.
+
+## Read-only request replay (#804)
+
+**Status:** Blocked on a persisted diagnostics record and a server-enforced
+read-only replay operation.
+
+The frontend has no diagnostics view or request history endpoint. The backend
+must provide an authenticated, owner-scoped way to select a recorded request
+and replay it under a server-enforced read-only policy. Results must identify
+success or failure and expose only a safe response preview and relevant
+diagnostic metadata. Credentials, signing material, and other sensitive
+headers or values must be excluded or redacted; the client must not replay
+arbitrary user-supplied requests or rely on a UI-only read-only restriction.
+The contract must distinguish unavailable records and replay errors.
