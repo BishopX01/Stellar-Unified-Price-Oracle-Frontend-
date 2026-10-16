@@ -1,3 +1,5 @@
+import type { BacktestPreset } from '../utils/backtest'
+
 export type ChartTimeRange = '24h' | '7d' | '30d'
 export type RefreshInterval = 5000 | 10000 | 30000 | 60000
 export type DashboardView = 'card' | 'table'
@@ -13,6 +15,8 @@ export interface DataPreferences {
   sourcePriority: string[]
   /** Percentage divergence between off-chain and on-chain price that flags a pair as breached. */
   onChainDivergenceThresholdPercent: number
+  /** User-saved presets for aggregation parameter backtesting (#464). */
+  backtestPresets?: BacktestPreset[]
 }
 
 /** How the dashboard arranges what it shows. */
@@ -35,6 +39,8 @@ export interface PrivacyPreferences {
   analyticsOptOut?: boolean
   chartTimezone: ChartTimezone
   formatLocale: LocaleCode
+  /** #461 – Whether to render excluded-outlier source ticks on the price chart. */
+  showExcludedSources: boolean
 }
 
 /**

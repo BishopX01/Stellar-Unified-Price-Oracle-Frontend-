@@ -9,6 +9,7 @@ const ja = {
   },
   footer: {
     text: 'Stellar Unified Price Oracle · 開発者ポータル & 分析ダッシュボード',
+    securityLink: 'セキュリティ',
   },
 
   dashboard: {
@@ -173,6 +174,14 @@ const ja = {
       alertTypePersistent: '継続',
       alertTypeOneTimeDesc: '一度発火して無効になります。再利用するには再有効化してください。',
       alertTypePersistentDesc: '条件が満たされるたびに発火します。発火回数を追跡します。',
+      // Cooldown (#310)
+      cooldown: 'アラート間のクールダウン',
+      cooldownOff: 'オフ（即時発火）',
+      cooldown1min: '1分',
+      cooldown5min: '5分',
+      cooldown15min: '15分',
+      cooldown1hr: '1時間',
+      cooldownDesc: '価格がしきい値付近で変動する際の通知スパムを避けるため、再発火までの最小間隔。',
     },
     actions: {
       delete: 'アラートを削除',
@@ -222,6 +231,25 @@ const ja = {
       channel_discord: 'Discord',
       error_invalidDelay: 'ステップ{{step}}：遅延は0以上の分数である必要があります',
       error_outOfOrder: 'ステップ{{step}}：遅延は前のステップより早くできません',
+    },
+    // ── Price-level retest detection (#491) ──────────────────────────────
+    retest: {
+      title: '再テスト時に通知',
+      description: '価格がこの突破済みレベルを離れた後、再び入った場合にも発火します。',
+    },
+    // ── Alert simulation (#490) ──────────────────────────────────────────
+    simulate: {
+      title: 'アラートをテスト',
+      run: 'シミュレーションを実行',
+      description: 'ライブと同じ評価ロジックに合成価格系列を再生し、このアラートが発火する正確な位置をマークします。',
+      idle: 'シミュレーションを実行すると、ライブ設定に触れずにこのアラートの動作を確認できます。',
+    },
+    // ── Per-alert channel routing (#492) ──────────────────────────────────
+    channels: {
+      title: '通知先',
+      description: 'このアラートの配信先を選択します。空のままにすると、通知設定で構成したチャンネルが使用されます。',
+      useGlobal: 'グローバルデフォルトを使用',
+      noneConfigured: 'チャンネルが設定されていません — 先に通知設定でチャンネルを設定してください。',
     },
     presets: {
       title: 'プリセットから開始',
@@ -277,6 +305,16 @@ const ja = {
       snoozed: 'スヌーズ',
       fired: '発火済み',
     },
+    // Alert health checks (#493)
+    health: {
+      badge: '発火しない可能性あり',
+      review: '確認',
+      dismiss: '閉じる',
+      title: 'ヘルスチェック',
+      reasonNeverSatisfiable: 'このしきい値は観測履歴で一度も到達していません。',
+      reasonInsufficientHistory: 'この条件を判断するには価格履歴がまだ足りません。',
+      suggestion: '観測データは代わりに{{value}}を示唆しています。',
+    },
     fired: {
       at: '{{time}}に発火',
       reEnable: 'アラートを再有効化',
@@ -291,10 +329,33 @@ const ja = {
       dir_down: '↓ 下落',
       dir_either: '↕ どちらも',
     },
+    tabs: {
+      alerts: 'アラート',
+      history: '履歴',
+    },
+    history: {
+      empty: 'まだ発火したアラートはありません',
+      searchPlaceholder: '資産ペアで検索…',
+      noResults: '検索に一致する履歴エントリはありません',
+      clear: '履歴をクリア',
+      clearConfirm: 'アラート履歴をすべてクリアしますか？この操作は元に戻せません。',
+      exportCsv: 'CSVエクスポート',
+      exportJson: 'JSONエクスポート',
+      count_one: '{{count}}件のアラートが発火',
+      count_other: '{{count}}件のアラートが発火',
+      priceAt: '価格: ${{price}}',
+    },
     escalation: {
       label: 'エスカレーション：',
       progress: '{{total}}件中{{fired}}件のステップが発火',
       historyBadge: 'エスカレーション・{{channel}}',
+    },
+    // ── Price-level retest detection (#491) ───────────────────────────────
+    retest: {
+      inBreach: '突破中',
+      exited: '離脱',
+      idle: '監視中',
+      historyBadge: '再テスト',
     },
   },
 
@@ -313,6 +374,25 @@ const ja = {
       name: 'ステーブルコインのペグ崩壊',
       description: '価格が1.00ドルのペグからどちらかの方向に1%以上乖離すること。',
       useCase: '保有・利用しているステーブルコインのペグが崩れる兆候を早期に検知します。',
+    },
+  },
+
+  // ── ConnectionStatus ──────────────────────────────────────────────────────
+  connection: {
+    live: 'ライブ',
+    connecting: '接続中',
+    reconnecting: '再接続中',
+    offline: 'オフライン',
+    rateLimited: 'レート制限中',
+    rateLimitedWithTimer: 'レート制限中（{{seconds}}秒）',
+    ariaLabel: 'WebSocket {{status}}',
+    rateLimitedAriaLabel: 'APIレート制限中',
+    tooltips: {
+      connected: 'WebSocketが接続されています。価格更新がリアルタイムで配信されています。',
+      connecting: '価格フィードサーバーへのWebSocket接続を確立しています。',
+      reconnecting: 'WebSocket接続が失われました。自動的に再接続を試みています。',
+      disconnected: 'WebSocketはオフラインです。価格はRESTポーリングのみで更新されます。',
+      rateLimited: 'APIが一時的にレート制限されています。再試行ウィンドウの期限が切れるとリクエストが再開されます。',
     },
   },
 
@@ -342,6 +422,89 @@ const ja = {
     heading: '404',
     message: 'ページが見つかりません',
     backToDashboard: 'ダッシュボードに戻る',
+  },
+
+  priceDetail: {
+    back: '戻る',
+    backAriaLabel: 'ダッシュボードに戻る',
+    sections: {
+      currentPrice: '現在価格',
+      oracleSources: 'オラクルソース',
+      priceHistory: '価格履歴（ページング）',
+      importData: '価格データのインポート',
+    },
+    live: 'LIVE',
+    confidence: '信頼度{{value}}%',
+    updated: '{{time}}に更新',
+    historyError: '価格履歴の読み込みに失敗しました: {{message}}',
+    emptyState: {
+      title: '価格データがありません',
+      detail: 'このペアの価格データはありません。',
+    },
+    tabs: {
+      overview: '概要',
+      proof: '証明',
+    },
+    proof: {
+      loadingLabel: 'オンチェーン証明を読み込み中',
+      historicalSelectorLabel: 'レコードを検証',
+      latestOption: '最新',
+      unsupported: {
+        title: 'オンチェーン証明を利用できません',
+        detail:
+          'この資産ペアにはまだ正規のオンチェーンStellar表現がないため、検証するSorobanオラクルレコードがありません。フィードをオンチェーンに載せるために必要なことは、オンチェーンオラクルのロードマップをご覧ください。',
+      },
+      error: 'オンチェーン証明の読み込みに失敗しました: {{message}}',
+      retry: '再試行',
+      aggregateSection: '集約コミットメント',
+      aggregateSignature: '集約署名',
+      contractId: 'コントラクト',
+      transaction: 'トランザクション',
+      ledger: 'レジャー #{{sequence}}',
+      viewOnExplorer: 'エクスプローラーで表示',
+      contributionsSection: 'ソースの貢献',
+      contributionsCount: '{{count}}件のソースがこのレコードに貢献',
+      copy: 'コピー',
+      copyProofPayload: '証明ペイロードをコピー',
+      copied: 'クリップボードにコピーしました',
+      copyFailed: 'クリップボードへのコピーに失敗しました',
+    },
+  },
+
+  csv: {
+    imported: 'CSVデータをインポートしました — チャートにオーバーレイ表示されます',
+    clear: 'クリア',
+    dropOrBrowse: 'CSVファイルをドロップするか',
+    browse: '参照',
+    hint: '列: timestamp, price — 最大5MB',
+    uploadAriaLabel: '価格データインポート用のCSVファイルをアップロード',
+    errors: {
+      tooLarge: 'ファイルが5MBの制限を超えています',
+      invalidType: 'CSVファイルのみサポートされています',
+      empty: 'ファイルが空です',
+      noValidRows: '有効な行が見つかりません。期待される列: timestamp, price',
+    },
+  },
+
+  export: {
+    button: 'エクスポート',
+    ariaLabel: 'データをエクスポート',
+    exportAs: '{{format}}としてエクスポート',
+    langSelector: 'コードスニペットの言語',
+    columns: {
+      button: '列',
+      title: 'エクスポートする列を選択',
+      preset: {
+        minimal: '最小',
+        standard: '標準',
+        full: 'フル',
+      },
+      search: '列をフィルタ…',
+      available: '利用可能',
+      noMatches: '一致する列がありません',
+      selectedOrder: '選択済み（ドラッグで並べ替え）',
+      preview: 'プレビュー',
+    },
   },
 
   settings: {
@@ -393,10 +556,22 @@ const ja = {
     openSpec: 'OpenAPI仕様を開く',
     baseUrl: 'ベースURL:',
     ws: 'WS:',
+    cacheStatus: 'キャッシュ:',
     tryItOut: '試してみる',
     sending: '送信中…',
     copy: 'コピー',
     copied: 'コピーしました！',
+  },
+
+  // ── Source descriptions (PriceCard tooltips) ──────────────────────────────
+  sources: {
+    chainlink:
+      'Chainlinkは、プレミアムデータプロバイダーから改ざん防止された価格データを配信する分散型オラクルネットワークです。',
+    redstone:
+      'RedStoneは、オンデマンドで署名付き価格フィードを配信するモジュラーオラクルで、データをオフチェーンに保存することでガスコストを削減します。',
+    band: 'Band Protocolは複数のソースから実世界のデータを集約し、委任バリデータを通じてオンチェーンで利用できるようにします。',
+    reflector: 'ReflectorはStellarネイティブのオラクルで、資産価格をStellarネットワークに直接公開します。',
+    defaultTooltip: '{{source}}がこの集約値に価格フィードを提供しました。',
   },
 
   // ── Landing / Hero (#297) ─────────────────────────────────────────────────
@@ -440,6 +615,76 @@ const ja = {
   },
 
   // ── Touch gestures / Pull-to-refresh (#293) ───────────────────────────────
+  wallet: {
+    connect: 'ウォレットを接続',
+    connecting: '接続中…',
+    disconnect: '切断',
+    installFreighter: 'Freighterをインストール',
+    network: 'ネットワーク',
+    address: 'アドレス',
+    balance: '残高',
+    balanceUnfunded: '資金なし',
+    ariaConnected: 'ウォレット接続済み: {{address}}',
+    gate: {
+      title: 'ウォレットが必要です',
+      description:
+        'オラクルコントラクトへのデプロイや公開などのオンチェーン機能を使用するには、Stellarウォレットを接続してください。',
+    },
+  },
+
+  // ── コマンドパレット ──────────────────────────────────────────────────────
+  commandPalette: {
+    title: 'コマンドパレット',
+    open: 'コマンドパレットを開く',
+    openShort: '検索',
+    placeholder: 'コマンドを入力するか検索…',
+    noResults: '「{{query}}」に一致するコマンドはありません',
+    noResultsHint: '別の検索語を試してください。',
+    resultCount_one: '{{count}} 件のコマンド',
+    resultCount_other: '{{count}} 件のコマンド',
+    hintNavigate: '移動',
+    hintExecute: '実行',
+    hintClose: '閉じる',
+    categories: {
+      navigation: 'ナビゲーション',
+      pricePairs: '価格ペア',
+      filters: 'フィルターと並び替え',
+      alerts: 'アラート',
+      exports: 'エクスポート',
+      theme: 'テーマ',
+      savedViews: '保存したビュー',
+    },
+    nav: {
+      webhooks: 'Webhooks',
+      security: 'セキュリティ',
+    },
+    filters: {
+      clear: 'すべてのフィルターを解除',
+      allSources: 'すべてのオラクルソースを表示',
+      sourceOnly: '{{source}} のみ表示',
+      updatedWithin: '{{window}} 以内に更新',
+      sortBy: '{{field}} で並び替え',
+      toggleDirection: '並び替えの方向を切り替え',
+    },
+    alerts: {
+      create: '価格アラートを作成…',
+      togglePanel: 'アラートパネルを切り替え',
+    },
+    exports: {
+      csv: 'CSV としてエクスポート',
+      json: 'JSON としてエクスポート',
+      xlsx: 'XLSX としてエクスポート',
+      columns: 'エクスポート列を選択…',
+      disabledNoData: 'エクスポートするデータがありません',
+      disabledRateLimited: 'エクスポートの上限に達しました ({{seconds}}秒)',
+    },
+    theme: {
+      light: 'ライトテーマに切り替え',
+      dark: 'ダークテーマに切り替え',
+      system: 'システムテーマを使用',
+      toggle: 'ライト/ダークを切り替え',
+    },
+  },
 } as const
 
 export default ja

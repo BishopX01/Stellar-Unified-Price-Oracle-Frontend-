@@ -1,11 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { FakeWebSocket } from '../test/fakeWebSocket'
 import { WebSocketClient } from './websocket'
+import { WS_PROTOCOL_VERSION } from './version'
 
 let ws: FakeWebSocket
 
 function stubWebSocket(): void {
-  const mock = vi.fn(() => ws) as unknown as { OPEN: number; CONNECTING: number; CLOSING: number; CLOSED: number }
+  // `websocket.ts` calls `new WebSocket(url)`. A `vi.fn()` wrapping an arrow
+  // function can't be invoked with `new` (arrow functions have no
+  // `[[Construct]]`) — that throws "is not a constructor" the moment
+  // `connect()` runs. Wrapping a regular `function` instead works: `new`
+  // uses whatever object it explicitly returns, per the normal JS
+  // constructor-return-value-override rule.
+  const mock = vi.fn(function (this: unknown) {
+    return ws
+  }) as unknown as { OPEN: number; CONNECTING: number; CLOSING: number; CLOSED: number }
   mock.OPEN = FakeWebSocket.OPEN
   mock.CONNECTING = FakeWebSocket.CONNECTING
   mock.CLOSING = FakeWebSocket.CLOSING
@@ -46,7 +55,9 @@ describe('WebSocketClient', () => {
     client.subscribe('BTC/USD')
     ws.sent.length = 0
     ws.simulateOpen()
+    // #472 – the client sends the protocol handshake before subscribing.
     expect(ws.sent).toEqual([
+      JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION }),
       JSON.stringify({ action: 'subscribe', assetPairs: ['BTC/USD'] }),
     ])
   })
@@ -155,6 +166,9 @@ describe('WebSocketClient', () => {
     const client = new WebSocketClient()
     client.connect()
     ws.simulateOpen()
+    // The protocol handshake is expected on open (#472) — isolate what
+    // happens after disconnect from that legitimate open-time traffic.
+    ws.sent.length = 0
     client.disconnect()
     ws.simulateClose()
     expect(ws.closed).toBe(true)
@@ -436,7 +450,8 @@ describe('WebSocketClient', () => {
     client.subscribe(['BTC/USD', 'ETH/USD'])
     ws.sent.length = 0
     ws.simulateOpen()
-    expect(JSON.parse(ws.sent[0]).assetPairs.sort()).toEqual(['BTC/USD', 'ETH/USD'])
+    // #472 – sent[0] is now the hello handshake; the subscribe follows it.
+    expect(JSON.parse(ws.sent[1]).assetPairs.sort()).toEqual(['BTC/USD', 'ETH/USD'])
 
     // Unsubscribe one pair while disconnected, then reconnect again.
     ws.simulateClose()
@@ -444,7 +459,7 @@ describe('WebSocketClient', () => {
     vi.advanceTimersByTime(30_000)
     ws.sent.length = 0
     ws.simulateOpen()
-    expect(JSON.parse(ws.sent[0]).assetPairs).toEqual(['BTC/USD'])
+    expect(JSON.parse(ws.sent[1]).assetPairs).toEqual(['BTC/USD'])
     vi.useRealTimers()
   })
 
@@ -521,11 +536,60 @@ describe('WebSocketClient', () => {
     vi.advanceTimersByTime(1_000)
     expect(connectSpy).not.toHaveBeenCalled()
 
-    vi.advanceTimersByTime(1_500)
+    // Once the 2s rate-limit window clears, scheduleReconnect() re-runs and
+    // applies a *fresh* jittered backoff (up to INITIAL_DELAY_MS at attempt
+    // 0) before actually calling connect() — advance past the worst case
+    // for that jitter too, not just the rate-limit window itself.
+    vi.advanceTimersByTime(2_100)
     expect(connectSpy).toHaveBeenCalledTimes(1)
 
     rateLimitManager.clearRateLimit()
     connectSpy.mockRestore()
     vi.useRealTimers()
+  })
+
+  // ── WS protocol versioning (#472) ───────────────────────────────────────────
+
+  it('negotiates the protocol version and does not forward the welcome', () => {
+    const client = new WebSocketClient()
+    const handler = vi.fn()
+    client.onMessage(handler)
+    client.connect()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'welcome', protocolVersion: WS_PROTOCOL_VERSION })
+    expect(client.diagnostics.protocolVersion).toBe(WS_PROTOCOL_VERSION)
+    expect(client.diagnostics.protocolUpgradeRequired).toBe(false)
+    // The welcome is a handshake reply, not forwarded to app handlers.
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('flags an upgrade requirement when the server is newer', () => {
+    const client = new WebSocketClient()
+    client.connect()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'welcome', protocolVersion: WS_PROTOCOL_VERSION + 1 })
+    expect(client.diagnostics.protocolVersion).toBe(WS_PROTOCOL_VERSION + 1)
+    expect(client.diagnostics.protocolUpgradeRequired).toBe(true)
+  })
+
+  it('does not flag an upgrade when the server is older or equal', () => {
+    const client = new WebSocketClient()
+    client.connect()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'welcome', protocolVersion: WS_PROTOCOL_VERSION - 1 })
+    expect(client.diagnostics.protocolUpgradeRequired).toBe(false)
+  })
+
+  it('ignores an unknown/out-of-shape welcome gracefully', () => {
+    const client = new WebSocketClient()
+    const handler = vi.fn()
+    client.onMessage(handler)
+    client.connect()
+    ws.simulateOpen()
+    // Missing/negative version fails the schema; the connection should survive.
+    ws.simulateMessage({ type: 'welcome', protocolVersion: -1 })
+    expect(client.diagnostics.protocolVersion).toBeNull()
+    expect(handler).not.toHaveBeenCalled()
+    expect(client.status).toBe('connected')
   })
 })

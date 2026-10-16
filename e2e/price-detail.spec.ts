@@ -14,7 +14,7 @@ test('navigating to a price detail page renders the pair heading', async ({ page
 })
 
 test('back button on price detail returns to dashboard', async ({ page }) => {
-  await page.goto('/')
+  await page.goto('/dashboard')
   await page.waitForLoadState('networkidle')
   await expect(page.locator('[aria-label="Price feeds"]')).toBeVisible({ timeout: 10_000 })
 
@@ -24,7 +24,7 @@ test('back button on price detail returns to dashboard', async ({ page }) => {
   await page.waitForLoadState('networkidle')
 
   // Confirm we left the dashboard
-  await expect(page).not.toHaveURL('/', { timeout: 5_000 })
+  await expect(page).not.toHaveURL('/dashboard', { timeout: 5_000 })
 
   // Click the back button
   const backBtn = page.getByRole('button', { name: /go back to dashboard/i })
@@ -106,7 +106,9 @@ test('CSV import shows error for invalid file type', async ({ page }) => {
     buffer: Buffer.from('not a csv'),
   })
 
-  await expect(page.getByRole('alert')).toBeVisible({ timeout: 5_000 })
+  // The import zone renders its own inline alert; the page may also carry
+  // other role=alert regions (e.g. alert-history entries), so scope by text.
+  await expect(page.getByRole('alert').filter({ hasText: /CSV/ })).toBeVisible({ timeout: 5_000 })
 })
 
 test('CSV clear button removes imported data', async ({ page }) => {

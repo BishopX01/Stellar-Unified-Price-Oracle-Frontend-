@@ -40,7 +40,7 @@ describe('SourceHistoryDrilldown', () => {
   it('calls onClose when the close button is clicked', () => {
     const onClose = vi.fn()
     render(<SourceHistoryDrilldown source="chainlink" history={sampleHistory} onClose={onClose} />)
-    const closeBtn = screen.getByRole('button', { name: /close/i })
+    const closeBtn = screen.getByRole('button', { name: /close drilldown/i })
     fireEvent.click(closeBtn)
     expect(onClose).toHaveBeenCalledTimes(1)
   })
@@ -53,14 +53,14 @@ describe('SourceHistoryDrilldown', () => {
   })
 
   it('renders with empty history without crashing', () => {
-    expect(() =>
-      render(<SourceHistoryDrilldown source="band" history={[]} onClose={vi.fn()} />),
-    ).not.toThrow()
+    expect(() => render(<SourceHistoryDrilldown source="band" history={[]} onClose={vi.fn()} />)).not.toThrow()
   })
 
   it('shows total data points count', () => {
     render(<SourceHistoryDrilldown source="chainlink" history={sampleHistory} onClose={vi.fn()} />)
-    // 3 entries → "3" appears somewhere in the stats
-    expect(screen.getByText(/3/)).toBeInTheDocument()
+    // 3 entries → "3" appears somewhere in the stats. Exact match, not a regex:
+    // relative timestamps like "9/8 13:00" contain a "3" and would collide
+    // depending on the time of day the suite runs.
+    expect(screen.getByText('3', { exact: true })).toBeInTheDocument()
   })
 })

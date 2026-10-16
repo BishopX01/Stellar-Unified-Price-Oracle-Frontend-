@@ -5,6 +5,8 @@
  * health status and historical price-feed data.
  *
  * Columns: Rank | Source | Status | Uptime % | Mean Latency (ms) | Staleness | Trend
+ * (the latency header is overridable via `latencyLabel` when the supplied health
+ * records carry a derived rather than a measured latency).
  *
  * Time-window buttons (24h / 7d / 30d) control which slice of priceHistory is
  * used for metric computation. An Export button downloads the current metrics
@@ -13,8 +15,9 @@
 import { memo, useState, useMemo, useCallback, type ReactElement } from 'react'
 import type { SourceHealth, PriceHistoryEntry } from '../types'
 import { SOURCE_COLORS } from '../utils/sourceColors'
-import { computeSourceMetrics, exportLeaderboardCsv } from '../utils/export'
+import { computeSourceMetrics, exportLeaderboardCsv, exportLeaderboardJson } from '../utils/export'
 import type { SourceReliabilityMetric } from '../utils/export'
+import { ATTRIBUTION_DEFINITION } from '../analytics/sourceAttribution'
 import { SourceHistoryDrilldown } from './SourceHistoryDrilldown'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -42,6 +45,28 @@ const STATUS_STYLES: Record<SourceHealth['status'], string> = {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+interface ScoreBadgeProps {
+  score: number
+}
+
+const ScoreBadge = memo(function ScoreBadge({ score }: ScoreBadgeProps): ReactElement {
+  const color =
+    score >= 90
+      ? 'bg-green-500/20 text-green-400 border-green-500/40'
+      : score >= 70
+        ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40'
+        : 'bg-red-500/20 text-red-400 border-red-500/40'
+
+  return (
+    <span
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-semibold font-mono border ${color}`}
+      title={`Reliability Score: ${score}/100`}
+    >
+      {score}
+    </span>
+  )
+})
 
 interface TrendIconProps {
   trend: SourceReliabilityMetric['trend']
@@ -81,6 +106,15 @@ export interface ReliabilityLeaderboardProps {
    * contribution metrics. Optional — latency-only view is shown when absent.
    */
   priceHistory?: Record<string, PriceHistoryEntry[]>
+  /**
+   * Header for the latency column. Override when the incoming `SourceHealth`
+   * records do not carry a measured latency — e.g. the records produced by
+   * `deriveSourceHealths`, whose `latency` is synthesised from staleness.
+   * Defaults to the measured-latency label.
+   */
+  latencyLabel?: string
+  /** Optional caption shown under the header, e.g. a provenance caveat. */
+  caption?: string
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -88,6 +122,8 @@ export interface ReliabilityLeaderboardProps {
 export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
   sourceHealths,
   priceHistory = {},
+  latencyLabel = 'Mean Latency (ms)',
+  caption,
 }: ReliabilityLeaderboardProps): ReactElement {
   const [window, setWindow] = useState<TimeWindow>('24h')
   const [drilldownSource, setDrilldownSource] = useState<string | null>(null)
@@ -111,8 +147,12 @@ export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
     return map
   }, [sourceHealths])
 
-  const handleExport = useCallback(() => {
+  const handleExportCsv = useCallback(() => {
     exportLeaderboardCsv(metrics)
+  }, [metrics])
+
+  const handleExportJson = useCallback(() => {
+    exportLeaderboardJson(metrics)
   }, [metrics])
 
   const handleDrilldown = useCallback((source: string) => {
@@ -139,12 +179,14 @@ export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
         {/* ── Header ── */}
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-b border-gray-800">
           <div>
-            <h2 className="text-base font-semibold text-gray-100">
-              Reliability Leaderboard
-            </h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Ranked by uptime over the selected window
+            <h2 className="text-base font-semibold text-gray-100">Reliability Leaderboard</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Ranked by reliability score & uptime over the selected window
             </p>
+            <p className="text-xs text-gray-500 mt-0.5" data-testid="metric-definition">
+              Window: {WINDOW_LABELS[window]}. {ATTRIBUTION_DEFINITION}
+            </p>
+            {caption && <p className="text-xs text-gray-500 mt-0.5">{caption}</p>}
           </div>
 
           <div className="flex items-center gap-2">
@@ -161,10 +203,8 @@ export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
                   onClick={() => setWindow(w)}
                   aria-pressed={window === w}
                   className={[
-                    'px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
-                    window === w
-                      ? 'bg-gray-700 text-gray-100'
-                      : 'text-gray-400 hover:text-gray-200',
+                    'px-3 py-1.5 min-h-[44px] min-w-[44px] text-xs font-medium rounded-md transition-colors',
+                    window === w ? 'bg-gray-700 text-gray-100' : 'text-gray-400 hover:text-gray-200',
                   ].join(' ')}
                 >
                   {WINDOW_LABELS[w]}
@@ -172,29 +212,33 @@ export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
               ))}
             </div>
 
-            {/* Export button */}
-            <button
-              type="button"
-              onClick={handleExport}
-              disabled={metrics.length === 0}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <svg
-                className="w-3.5 h-3.5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
+            {/* Export buttons */}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                disabled={metrics.length === 0}
+                className="min-h-[44px] flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"
-                />
-              </svg>
-              Export CSV
-            </button>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"
+                  />
+                </svg>
+                CSV
+              </button>
+              <button
+                type="button"
+                onClick={handleExportJson}
+                disabled={metrics.length === 0}
+                className="min-h-[44px] flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                JSON
+              </button>
+            </div>
           </div>
         </div>
 
@@ -222,20 +266,11 @@ export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
             <table className="w-full text-sm" aria-label="Source reliability metrics">
               <thead>
                 <tr className="border-b border-gray-800">
-                  {[
-                    'Rank',
-                    'Source',
-                    'Status',
-                    'Uptime %',
-                    'Mean Latency (ms)',
-                    'Staleness',
-                    'Trend',
-                    '',
-                  ].map((col) => (
+                  {['Rank', 'Source', 'Score', 'Status', 'Uptime %', latencyLabel, 'Staleness', 'Trend'].map((col) => (
                     <th
                       key={col}
                       scope="col"
-                      className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
+                      className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider whitespace-nowrap"
                     >
                       {col}
                     </th>
@@ -255,9 +290,7 @@ export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
                       className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors"
                     >
                       {/* Rank */}
-                      <td className="px-4 py-3 text-gray-500 font-mono tabular-nums">
-                        {idx + 1}
-                      </td>
+                      <td className="px-4 py-3 text-gray-500 font-mono tabular-nums">{idx + 1}</td>
 
                       {/* Source */}
                       <td className="px-4 py-3">
@@ -269,6 +302,11 @@ export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
                         >
                           {capitalize(metric.source)}
                         </span>
+                      </td>
+
+                      {/* Score */}
+                      <td className="px-4 py-3">
+                        <ScoreBadge score={metric.reliabilityScore} />
                       </td>
 
                       {/* Status */}
@@ -300,9 +338,11 @@ export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
 
                       {/* Mean Latency */}
                       <td className="px-4 py-3 text-gray-300 tabular-nums font-mono">
-                        {metric.meanLatencyMs !== null
-                          ? `${Math.round(metric.meanLatencyMs)} ms`
-                          : <span className="text-gray-600">—</span>}
+                        {metric.meanLatencyMs !== null ? (
+                          `${Math.round(metric.meanLatencyMs)} ms`
+                        ) : (
+                          <span className="text-gray-600">—</span>
+                        )}
                       </td>
 
                       {/* Staleness */}
@@ -320,7 +360,7 @@ export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
                         <button
                           type="button"
                           onClick={() => handleDrilldown(metric.source)}
-                          className="text-xs text-cyan-400 hover:text-cyan-300 hover:underline transition-colors"
+                          className="min-h-[44px] inline-flex items-center text-xs text-cyan-400 hover:text-cyan-300 hover:underline transition-colors"
                         >
                           Details
                         </button>
@@ -336,11 +376,7 @@ export const ReliabilityLeaderboard = memo(function ReliabilityLeaderboard({
 
       {/* ── Drilldown Modal ── */}
       {drilldownSource !== null && (
-        <SourceHistoryDrilldown
-          source={drilldownSource}
-          history={drilldownHistory}
-          onClose={handleCloseDrilldown}
-        />
+        <SourceHistoryDrilldown source={drilldownSource} history={drilldownHistory} onClose={handleCloseDrilldown} />
       )}
     </>
   )
@@ -360,20 +396,12 @@ interface UptimeBarProps {
 
 const UptimeBar = memo(function UptimeBar({ percent }: UptimeBarProps): ReactElement {
   const clamped = Math.min(100, Math.max(0, percent))
-  const color =
-    clamped >= 99
-      ? 'bg-green-500'
-      : clamped >= 90
-        ? 'bg-yellow-500'
-        : 'bg-red-500'
+  const color = clamped >= 99 ? 'bg-green-500' : clamped >= 90 ? 'bg-yellow-500' : 'bg-red-500'
 
   return (
     <div className="flex items-center gap-2">
       <div className="w-20 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-        <div
-          className={`h-full rounded-full ${color}`}
-          style={{ width: `${clamped}%` }}
-        />
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${clamped}%` }} />
       </div>
       <span className="text-gray-300 text-xs">{clamped.toFixed(1)}%</span>
     </div>

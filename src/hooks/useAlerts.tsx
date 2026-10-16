@@ -1,47 +1,41 @@
-import { useState, useCallback, useEffect, createContext, useContext, ReactNode } from 'react'
-import type { Alert, AlertHistoryEntry, AlertsContextType, AlertSnoozeDuration, EscalationStep, PriceEvaluationState } from '../types'
+import { recordRuleVersion, removeRuleHistory } from '../services/alertRuleHistory'
+import { useState, useCallback, useEffect, useRef, createContext, useContext, ReactNode } from 'react'
+import type {
+  Alert,
+  AlertHistoryEntry,
+  AlertsContextType,
+  AlertSnoozeDuration,
+  EscalationStep,
+  PriceEvaluationState,
+} from '../types'
 import { migrateLegacyAlertConditions } from '../types/alerts'
 import { usePriceContext } from '../context/PriceContext'
 import { AlertsArraySchema } from '../api/schemas'
 import { createBroadcastChannel } from '../utils/broadcastChannel'
-import { readJson, readRaw, writeJson, STORAGE_KEYS } from '../utils/storage'
+import { readRaw, STORAGE_KEYS } from '../utils/storage'
+import { persistDurable } from '../utils/durableWrites'
 import { playAlertSound, unlockAudioContext } from '../utils/alertSound'
 import { loadSoundPreferences } from '../utils/soundPreferences'
 import { evaluateCompoundCondition } from '../utils/alertEvaluator'
 import {
   loadAlertHistory,
-  saveAlertHistory,
+  saveAlertHistoryDebounced,
+  flushAlertHistory,
   buildTriggerHistoryEntry,
   buildEscalationHistoryEntry,
   appendHistoryEntries,
+  recordAlertEvents,
+  importAlertHistoryToEngine,
+  clearAlertEventSeries,
 } from '../services/alertHistory'
 import { loadBotSecrets, sendTelegramMessage, sendDiscordMessage } from '../services/botNotifications'
+import { loadNotifConfig, resolveAlertChannels, type NotifConfig } from '../services/notificationConfig'
+import { stepRetest, initialRetestState } from '../utils/retestDetector'
+import { registerMemoryProbe } from '../utils/memoryProfiler'
 import { useRateLimit } from './useRateLimit'
 
 const alertsChannel = createBroadcastChannel<Alert[]>('kiro-alerts')
 const alertsHistoryChannel = createBroadcastChannel<AlertHistoryEntry[]>('kiro-alerts-history')
-
-// ---------------------------------------------------------------------------
-// #315 / #488 – Notification channel config (mirrors NotificationChannelsModal)
-// ---------------------------------------------------------------------------
-interface NotifConfig {
-  email: { address: string; enabled: boolean }
-  webPush: { enabled: boolean }
-  webhook: { url: string; enabled: boolean }
-  telegram: { chatId: string; enabled: boolean }
-  discord: { channelId: string; enabled: boolean }
-}
-
-/** Load the persisted (secret-free) notification config. */
-function loadNotifConfig(): NotifConfig {
-  return readJson<NotifConfig>(STORAGE_KEYS.notificationChannels, {
-    email: { address: '', enabled: false },
-    webPush: { enabled: false },
-    webhook: { url: '', enabled: false },
-    telegram: { chatId: '', enabled: false },
-    discord: { channelId: '', enabled: false },
-  })
-}
 
 function alertMessage(alert: Alert, currentPrice: number): string {
   return alert.percentageMode
@@ -63,20 +57,38 @@ async function dispatchEmailChannel(cfg: NotifConfig, alert: Alert, currentPrice
     await fetch('/api/notifications/email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: cfg.email.address, subject: 'Price Alert Triggered', message: body, assetPair: alert.assetPair, price: currentPrice }),
+      body: JSON.stringify({
+        to: cfg.email.address,
+        subject: 'Price Alert Triggered',
+        message: body,
+        assetPair: alert.assetPair,
+        price: currentPrice,
+      }),
     })
   } catch {
     // Best-effort; don't let a network error break the alert system
   }
 }
 
-async function dispatchWebhookChannel(cfg: NotifConfig, alert: Alert, currentPrice: number, body: string): Promise<void> {
+async function dispatchWebhookChannel(
+  cfg: NotifConfig,
+  alert: Alert,
+  currentPrice: number,
+  body: string,
+): Promise<void> {
   if (!cfg.webhook.enabled || !cfg.webhook.url) return
   try {
     await fetch(cfg.webhook.url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'alert_triggered', assetPair: alert.assetPair, price: currentPrice, message: body, alertId: alert.id, timestamp: Date.now() }),
+      body: JSON.stringify({
+        type: 'alert_triggered',
+        assetPair: alert.assetPair,
+        price: currentPrice,
+        message: body,
+        alertId: alert.id,
+        timestamp: Date.now(),
+      }),
     })
   } catch {
     // Best-effort
@@ -92,11 +104,13 @@ async function dispatchTelegramChannel(
 ): Promise<void> {
   if (!cfg.telegram.enabled || !cfg.telegram.chatId) return
   const { telegramBotToken } = loadBotSecrets()
-  await sendTelegramMessage(
-    { chatId: cfg.telegram.chatId, enabled: cfg.telegram.enabled },
-    telegramBotToken,
-    { assetPair: alert.assetPair, price: currentPrice, message: body, timestamp: Date.now(), escalation },
-  )
+  await sendTelegramMessage({ chatId: cfg.telegram.chatId, enabled: cfg.telegram.enabled }, telegramBotToken, {
+    assetPair: alert.assetPair,
+    price: currentPrice,
+    message: body,
+    timestamp: Date.now(),
+    escalation,
+  })
 }
 
 async function dispatchDiscordChannel(
@@ -108,28 +122,35 @@ async function dispatchDiscordChannel(
 ): Promise<void> {
   if (!cfg.discord.enabled) return
   const { discordWebhookUrl } = loadBotSecrets()
-  await sendDiscordMessage(
-    { channelId: cfg.discord.channelId, enabled: cfg.discord.enabled },
-    discordWebhookUrl,
-    { assetPair: alert.assetPair, price: currentPrice, message: body, timestamp: Date.now(), escalation },
-  )
+  await sendDiscordMessage({ channelId: cfg.discord.channelId, enabled: cfg.discord.enabled }, discordWebhookUrl, {
+    assetPair: alert.assetPair,
+    price: currentPrice,
+    message: body,
+    timestamp: Date.now(),
+    escalation,
+  })
 }
 
 /**
- * #315/#488 – Fire all enabled notification channels for a triggered alert
+ * #315/#488/#492 – Fire the notification channels an alert routes to
  * (its initial fire or a persistent re-fire — not an individual escalation step,
- * see {@link dispatchEscalationStep}).
+ * see {@link dispatchEscalationStep}). Channel selection follows
+ * `resolveAlertChannels` (#492): an alert's explicit `channels` override wins,
+ * otherwise every currently-enabled global channel fires.
  */
 async function dispatchNotifications(alert: Alert, currentPrice: number): Promise<void> {
   const cfg = loadNotifConfig()
   const body = alertMessage(alert, currentPrice)
-  dispatchWebPushChannel(cfg, body)
+  const targets = resolveAlertChannels(cfg, alert.channels)
   await Promise.all([
-    dispatchEmailChannel(cfg, alert, currentPrice, body),
-    dispatchWebhookChannel(cfg, alert, currentPrice, body),
-    dispatchTelegramChannel(cfg, alert, currentPrice, body),
-    dispatchDiscordChannel(cfg, alert, currentPrice, body),
+    targets.has('email') ? dispatchEmailChannel(cfg, alert, currentPrice, body) : Promise.resolve(),
+    targets.has('webhook') ? dispatchWebhookChannel(cfg, alert, currentPrice, body) : Promise.resolve(),
+    targets.has('telegram') ? dispatchTelegramChannel(cfg, alert, currentPrice, body) : Promise.resolve(),
+    targets.has('discord') ? dispatchDiscordChannel(cfg, alert, currentPrice, body) : Promise.resolve(),
   ])
+  if (targets.has('webPush')) {
+    dispatchWebPushChannel(cfg, body)
+  }
 }
 
 /**
@@ -181,11 +202,16 @@ function snoozeDurationMs(duration: AlertSnoozeDuration): number {
 /** Returns the window duration in milliseconds for a percentage alert window */
 function windowMs(window: string): number {
   switch (window) {
-    case '5min':  return 5 * 60 * 1000
-    case '15min': return 15 * 60 * 1000
-    case '1hr':   return 60 * 60 * 1000
-    case '24hr':  return 24 * 60 * 60 * 1000
-    default:      return 60 * 60 * 1000
+    case '5min':
+      return 5 * 60 * 1000
+    case '15min':
+      return 15 * 60 * 1000
+    case '1hr':
+      return 60 * 60 * 1000
+    case '24hr':
+      return 24 * 60 * 60 * 1000
+    default:
+      return 60 * 60 * 1000
   }
 }
 
@@ -210,8 +236,13 @@ function loadAlerts(): Alert[] {
   }
 }
 
+/**
+ * Persists alerts durably. A `localStorage` write can fail (full quota, private
+ * mode); `persistDurable` queues the value for retry instead of dropping it
+ * silently, so an alert the user can see is never quietly lost on reload.
+ */
 function saveAlerts(alerts: Alert[]): void {
-  writeJson(STORAGE_KEYS.alerts, alerts)
+  persistDurable(STORAGE_KEYS.alerts, alerts)
 }
 
 const AlertsContext = createContext<AlertsContextType | null>(null)
@@ -237,6 +268,19 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
   const [history, setHistory] = useState<AlertHistoryEntry[]>(loadAlertHistory)
   const [isPanelOpen, setIsPanelOpen] = useState(false)
 
+  // #504 — report alert history length to the memory profiling harness.
+  // Registered once on mount; the ref keeps the probe reading the latest
+  // length without re-registering on every history change.
+  const historyRef = useRef(history)
+  historyRef.current = history
+  useEffect(() => registerMemoryProbe('alertHistory', () => historyRef.current.length), [])
+
+  // Backfill the existing localStorage log into the durable time-series the
+  // first time the provider mounts (idempotent — see importAlertHistoryToEngine).
+  useEffect(() => {
+    importAlertHistoryToEngine()
+  }, [])
+
   const { livePrices } = usePriceContext()
 
   // Rate limiter for alert creation (max 5 per minute)
@@ -249,11 +293,7 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
       setAlerts((prev) => {
         const changed = prev.some((a) => a.snoozedUntil !== null && a.snoozedUntil <= now)
         if (!changed) return prev
-        return prev.map((a) =>
-          a.snoozedUntil !== null && a.snoozedUntil <= now
-            ? { ...a, snoozedUntil: null }
-            : a,
-        )
+        return prev.map((a) => (a.snoozedUntil !== null && a.snoozedUntil <= now ? { ...a, snoozedUntil: null } : a))
       })
     }, 30_000)
     return () => clearInterval(interval)
@@ -305,13 +345,59 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 
         // #485 – compound evaluation against the alert's (possibly legacy-migrated) condition group
         const group = updatedAlert.conditionGroup ?? migrateLegacyAlertConditions(updatedAlert)
-        const state: PriceEvaluationState = { price: currentPrice, percentageChange: { [window]: pctChange } }
+        const state: PriceEvaluationState = { price: currentPrice, percentageChange: { [window]: pctChange }, nowMs: Date.now() }
         triggered = evaluateCompoundCondition(group, state)
       } else {
         // ── Absolute threshold evaluation, via the compound evaluator (#485) ─
         const group = updatedAlert.conditionGroup ?? migrateLegacyAlertConditions(updatedAlert)
-        const state: PriceEvaluationState = { price: currentPrice }
+        const state: PriceEvaluationState = { price: currentPrice, nowMs: Date.now() }
         triggered = evaluateCompoundCondition(group, state)
+      }
+
+      // ── Price-level retest detection (#491) ──────────────────────────────
+      // Runs every tick on the evaluated `triggered` boolean. Advances the alert's
+      // retest state machine and records the breach/exit/retest sequence to
+      // history. When `retestMode` is enabled, a `retest` event fires the alert.
+      const retestPrev = updatedAlert.retestState
+      const stepped = stepRetest(retestPrev ?? initialRetestState(now), triggered, currentPrice, now)
+      const retestEvent = stepped.event
+      const retestChanged =
+        retestEvent !== null ||
+        retestPrev === null ||
+        retestPrev.phase !== stepped.state.phase ||
+        retestPrev.cycles !== stepped.state.cycles
+      if (retestChanged) changed = true
+      updatedAlert = { ...updatedAlert, retestState: stepped.state }
+
+      if (retestEvent) {
+        if (retestEvent.kind === 'retest' && updatedAlert.retestMode) {
+          // retest-mode: fire on re-entry to the previously-breached zone.
+          void dispatchNotifications(updatedAlert, currentPrice)
+          const soundPrefs = loadSoundPreferences()
+          if (soundPrefs.enabled) playAlertSound(soundPrefs.volume)
+          const newFireCount = (updatedAlert.fireCount ?? 0) + 1
+          updatedAlert = {
+            ...updatedAlert,
+            fireCount: newFireCount,
+            lastTriggeredAt: now,
+            active: !updatedAlert.triggerOnce,
+          }
+          firedEntries.push(
+            buildTriggerHistoryEntry(updatedAlert, currentPrice, now, { kind: 'retest', cycle: retestEvent.cycle }),
+          )
+        } else if (updatedAlert.retestMode) {
+          // Retest-mode alerts record the sequence (breach / exit / non-firing
+          // retest) in history so the panel can show exactly how the threshold
+          // was revisited. For regular alerts the base trigger entry below is
+          // the only history record — recording the first `breach` here too
+          // would duplicate it.
+          firedEntries.push(
+            buildTriggerHistoryEntry(updatedAlert, currentPrice, now, {
+              kind: retestEvent.kind,
+              cycle: retestEvent.cycle,
+            }),
+          )
+        }
       }
 
       // Minimum time between re-fires of a persistent alert (#310) — prevents
@@ -394,6 +480,8 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
     if (firedEntries.length > 0) {
       // Newest first, capped (#309)
       setHistory((prev) => appendHistoryEntries(prev, firedEntries))
+      // Mirror into the time-series engine for retention/rollups/range queries.
+      recordAlertEvents(firedEntries)
     }
   }, [livePrices, alerts])
 
@@ -427,10 +515,18 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
   }, [alerts])
 
   useEffect(() => {
-    saveAlertHistory(history)
+    // Debounced (#510) — coalesces write storms (e.g. escalation bursts,
+    // simulation replay) into a single persisted write per burst.
+    saveAlertHistoryDebounced(history)
     // Broadcast history change to other tabs
     alertsHistoryChannel.broadcast('alerts-history-update', history)
   }, [history])
+
+  // Flush any pending debounced history write on unmount so the last burst
+  // is never lost (e.g. navigating away right after an alert fires).
+  useEffect(() => {
+    return () => flushAlertHistory()
+  }, [])
 
   // Listen for alerts changes from other tabs
   useEffect(() => {
@@ -453,7 +549,21 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const addAlert = useCallback(
-    (alert: Omit<Alert, 'id' | 'createdAt' | 'lastTriggeredAt' | 'fireCount' | 'snoozedUntil' | 'percentageBaselinePrice' | 'percentageBaselineTimestamp' | 'escalationState'>) => {
+    (
+      alert: Omit<
+        Alert,
+        | 'id'
+        | 'createdAt'
+        | 'lastTriggeredAt'
+        | 'fireCount'
+        | 'snoozedUntil'
+        | 'percentageBaselinePrice'
+        | 'percentageBaselineTimestamp'
+        | 'escalationState'
+        | 'channels'
+        | 'retestState'
+      > & { channels?: Alert['channels'] },
+    ) => {
       // Rate-limit alert creation: max 5 per minute.
       if (!alertRateLimit.consume()) {
         return null
@@ -461,6 +571,11 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
       const newAlert: Alert = {
         ...alert,
         conditionGroup: alert.conditionGroup ?? migrateLegacyAlertConditions(alert),
+        // #492 – default to `null` (use the global channel set) unless the caller
+        // passed an explicit per-alert routing override.
+        channels: alert.channels ?? null,
+        // #491 – retest tracking starts fresh for every new alert.
+        retestState: null,
         id: crypto.randomUUID(),
         createdAt: Date.now(),
         lastTriggeredAt: null,
@@ -470,6 +585,7 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
         percentageBaselineTimestamp: null,
         escalationState: null,
       }
+      recordRuleVersion(newAlert, newAlert.createdAt)
       setAlerts((prev) => [...prev, newAlert])
       return newAlert
     },
@@ -477,10 +593,20 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
   )
 
   const updateAlert = useCallback((id: string, updates: Partial<Omit<Alert, 'id' | 'createdAt'>>) => {
-    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, ...updates } : a)))
+    setAlerts((prev) =>
+      prev.map((a) => {
+        if (a.id !== id) return a
+        const next = { ...a, ...updates }
+        // #645 – append a rule version (idempotent: runtime-only changes and
+        // StrictMode double-invocation add nothing).
+        recordRuleVersion(next)
+        return next
+      }),
+    )
   }, [])
 
   const removeAlert = useCallback((id: string) => {
+    removeRuleHistory(id)
     setAlerts((prev) => prev.filter((a) => a.id !== id))
   }, [])
 
@@ -499,18 +625,14 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
   const togglePanel = useCallback(() => setIsPanelOpen((p) => !p), [])
 
   const markAsRead = useCallback((id: string) => {
-    setAlerts((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, lastTriggeredAt: a.lastTriggeredAt ?? Date.now() } : a)),
-    )
+    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, lastTriggeredAt: a.lastTriggeredAt ?? Date.now() } : a)))
   }, [])
 
   /** Snooze an alert for a given duration (#313) */
   const snoozeAlert = useCallback((id: string, duration: AlertSnoozeDuration) => {
     const until = snoozeDurationMs(duration)
     setAlerts((prev) =>
-      prev.map((a) =>
-        a.id === id ? { ...a, snoozedUntil: until, lastTriggeredAt: null } : a,
-      ),
+      prev.map((a) => (a.id === id ? { ...a, snoozedUntil: until, lastTriggeredAt: null, retestState: null } : a)),
     )
   }, [])
 
@@ -524,14 +646,25 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
     setAlerts((prev) =>
       prev.map((a) =>
         a.id === id
-          ? { ...a, active: true, lastTriggeredAt: null, fireCount: 0, snoozedUntil: null, escalationState: null }
+          ? {
+              ...a,
+              active: true,
+              lastTriggeredAt: null,
+              fireCount: 0,
+              snoozedUntil: null,
+              escalationState: null,
+              retestState: null,
+            }
           : a,
       ),
     )
   }, [])
 
   /** Clears the fired-alert history log (#309) */
-  const clearAlertHistory = useCallback(() => setHistory([]), [])
+  const clearAlertHistory = useCallback(() => {
+    setHistory([])
+    clearAlertEventSeries()
+  }, [])
 
   const value: AlertsContextType = {
     alerts,

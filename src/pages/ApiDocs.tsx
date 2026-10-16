@@ -14,6 +14,7 @@ interface Endpoint {
   description: string
   note?: string
   tryPath?: string
+  body?: string
 }
 
 const ENDPOINTS: Endpoint[] = [
@@ -39,6 +40,8 @@ const ENDPOINTS: Endpoint[] = [
     method: 'POST',
     path: '/api/prices/history/batch',
     description: 'Fetches price history for multiple asset pairs in a single request.',
+    tryPath: '/api/prices/history/batch',
+    body: '{"pairs":["XLM-USD","BTC-USD"]}',
   },
   {
     method: 'GET',
@@ -132,10 +135,31 @@ const LANG_LABELS: Record<SnippetLang, string> = {
   python: 'Python',
 }
 
+/**
+ * Response headers that carry cache status/CDN metadata, checked in priority
+ * order (#508). Different edge layers (Vercel, Cloudflare, a custom
+ * SWR-aware origin) name this header differently, so we surface whichever is
+ * present rather than assuming one CDN.
+ */
+const CACHE_STATUS_HEADERS = ['x-cache-status', 'cf-cache-status', 'x-vercel-cache', 'x-cache']
+
+function readCacheStatus(headers: Headers): string | null {
+  for (const name of CACHE_STATUS_HEADERS) {
+    const value = headers.get(name)
+    if (value) return value
+  }
+  return null
+}
+
 function TryItOut({ endpoint }: { endpoint: Endpoint }) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [cacheStatus, setCacheStatus] = useState<string | null>(null)
+  const [path, setPath] = useState<string>(() => endpoint.tryPath ?? '')
+  const [body, setBody] = useState<string>('{}')
+  const [latency, setLatency] = useState<number | null>(null)
+  const [headers, setHeaders] = useState<Record<string, string>>({})
   const { t } = useTranslation()
 
   if (!endpoint.tryPath || endpoint.method === 'WS') return null
@@ -144,15 +168,37 @@ function TryItOut({ endpoint }: { endpoint: Endpoint }) {
     setLoading(true)
     setResult(null)
     setError(null)
+    setCacheStatus(null)
+    setLatency(null)
+    setHeaders({})
+    const startedAt = performance.now()
     try {
-      const res = await fetch(`${config.apiUrl.replace(/\/api$/, '')}${endpoint.tryPath}`)
+      const base = config.apiUrl.replace(/\/api$/, '')
+      const res = await fetch(`${base}${path}`, {
+        method: endpoint.method,
+        headers: endpoint.method === 'POST' ? { 'Content-Type': 'application/json' } : undefined,
+        body: endpoint.method === 'POST' ? body : undefined,
+      })
+      setLatency(Math.round(performance.now() - startedAt))
+
+      const responseHeaders: Record<string, string> = {}
+      res.headers.forEach((value, key) => {
+        responseHeaders[key] = value
+      })
+      setHeaders(responseHeaders)
+      setCacheStatus(readCacheStatus(res.headers))
       const text = await res.text()
       try {
-        setResult(JSON.stringify(JSON.parse(text), null, 2))
+        const parsed: unknown = JSON.parse(text)
+        setResult(JSON.stringify(parsed, null, 2))
+        if (!res.ok && typeof parsed === 'object' && parsed !== null && 'message' in parsed)
+          setError(String(parsed.message))
       } catch {
-        setResult(text)
+        if (res.ok) setResult(text)
+        else setError(`${res.status} ${res.statusText}: ${text}`)
       }
     } catch (err) {
+      setLatency(Math.round(performance.now() - startedAt))
       setError(err instanceof Error ? err.message : 'Request failed')
     } finally {
       setLoading(false)
@@ -169,6 +215,11 @@ function TryItOut({ endpoint }: { endpoint: Endpoint }) {
       >
         {loading ? t('apiDocs.sending') : t('apiDocs.tryItOut')}
       </button>
+      {cacheStatus && (
+        <p className="mt-2 text-xs font-mono text-gray-400">
+          {t('apiDocs.cacheStatus', 'Cache:')} <span className="text-gray-300">{cacheStatus}</span>
+        </p>
+      )}
       {error && (
         <pre className="mt-2 p-3 rounded-lg bg-red-900/20 border border-red-800 text-red-400 text-xs overflow-auto max-h-48 whitespace-pre-wrap">
           {error}
@@ -178,6 +229,35 @@ function TryItOut({ endpoint }: { endpoint: Endpoint }) {
         <pre className="mt-2 p-3 rounded-lg bg-gray-900 border border-gray-700 text-gray-300 text-xs overflow-auto max-h-64">
           {result}
         </pre>
+      )}
+      <div className="mt-3 grid gap-2">
+        <label className="text-xs text-gray-400">
+          Path
+          <input
+            value={path}
+            onChange={(event) => setPath(event.target.value)}
+            className="mt-1 w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-200"
+          />
+        </label>
+        {endpoint.method === 'POST' && (
+          <label className="text-xs text-gray-400">
+            JSON body
+            <textarea
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              rows={3}
+              className="mt-1 w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs text-gray-200 font-mono"
+            />
+          </label>
+        )}
+      </div>
+      {(latency != null || Object.keys(headers).length > 0) && (
+        <p className="mt-2 text-xs text-gray-400">
+          {latency != null ? `${latency}ms` : ''}
+          {Object.entries(headers)
+            .map(([key, value]) => ` · ${key}: ${value}`)
+            .join('')}
+        </p>
       )}
     </div>
   )
@@ -199,38 +279,42 @@ function EndpointCard({ endpoint }: { endpoint: Endpoint }) {
   }
 
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900/50 overflow-hidden">
+    // Opaque dark card in every theme — the translucent version blended with
+    // the light page background and failed colour-contrast for its light text.
+    <div className="rounded-xl border border-gray-800 bg-gray-900 overflow-hidden">
       <div className="px-4 py-3 flex flex-wrap items-center gap-3">
         <span className={`px-2 py-0.5 rounded text-xs font-mono font-bold border ${METHOD_COLORS[endpoint.method]}`}>
           {endpoint.method}
         </span>
         <code className="text-sm font-mono text-gray-200">{endpoint.path}</code>
         <p className="w-full text-sm text-gray-400 mt-0.5">{endpoint.description}</p>
-        {endpoint.note && <p className="w-full text-xs text-gray-500 italic">{endpoint.note}</p>}
+        {endpoint.note && <p className="w-full text-xs text-gray-400 italic">{endpoint.note}</p>}
       </div>
 
       <div className="border-t border-gray-800 px-4 pt-3 pb-4">
-        <div className="flex gap-1 mb-2" role="tablist" aria-label={t('export.langSelector')}>
-          {(['curl', 'javascript', 'python'] as SnippetLang[]).map((l) => (
-            <button
-              key={l}
-              type="button"
-              role="tab"
-              aria-selected={lang === l}
-              onClick={() => setLang(l)}
-              className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
-                lang === l
-                  ? 'bg-gray-700 text-white'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
-              }`}
-            >
-              {LANG_LABELS[l]}
-            </button>
-          ))}
+        {/* The Copy control sits beside — not inside — the tablist: a tablist
+            may only contain role=tab children (aria-required-children). */}
+        <div className="flex gap-1 mb-2 items-center">
+          <div className="flex gap-1" role="tablist" aria-label={t('export.langSelector')}>
+            {(['curl', 'javascript', 'python'] as SnippetLang[]).map((l) => (
+              <button
+                key={l}
+                type="button"
+                role="tab"
+                aria-selected={lang === l}
+                onClick={() => setLang(l)}
+                className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+                  lang === l ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                }`}
+              >
+                {LANG_LABELS[l]}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
             onClick={handleCopy}
-            className="ml-auto text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            className="ml-auto text-xs text-gray-400 hover:text-gray-200 transition-colors"
             aria-label={t('apiDocs.copy')}
           >
             {copied ? t('apiDocs.copied') : t('apiDocs.copy')}
@@ -251,16 +335,21 @@ export function ApiDocs() {
     <div className="max-w-3xl mx-auto">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{t('apiDocs.title')}</h1>
-        <p className="text-sm text-gray-400 mt-1">{t('apiDocs.subtitle')}</p>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{t('apiDocs.subtitle')}</p>
         {config.openApiSpecUrl && (
           <a
             href={config.openApiSpecUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 mt-3 px-3 py-1.5 text-sm rounded-lg border border-cyan-800 bg-cyan-900/20 text-cyan-400 hover:bg-cyan-900/40 transition-colors"
+            className="inline-flex items-center gap-1.5 mt-3 px-3 py-1.5 text-sm rounded-lg border border-cyan-200 bg-cyan-50 text-cyan-800 hover:bg-cyan-100 dark:border-cyan-800 dark:bg-cyan-900/20 dark:text-cyan-400 dark:hover:bg-cyan-900/40 transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+              />
             </svg>
             {t('apiDocs.openSpec')}
           </a>
@@ -269,18 +358,36 @@ export function ApiDocs() {
           href="https://github.com/Stellar-Unified-Price-Oracle/Stellar-Unified-Price-Oracle-Frontend-/blob/main/docs/on-chain.md"
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 mt-3 ml-2 px-3 py-1.5 text-sm rounded-lg border border-cyan-800 bg-cyan-900/20 text-cyan-400 hover:bg-cyan-900/40 transition-colors"
+          className="inline-flex items-center gap-1.5 mt-3 ml-2 px-3 py-1.5 text-sm rounded-lg border border-cyan-200 bg-cyan-50 text-cyan-800 hover:bg-cyan-100 dark:border-cyan-800 dark:bg-cyan-900/20 dark:text-cyan-400 dark:hover:bg-cyan-900/40 transition-colors"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+            />
           </svg>
           Read the oracle on-chain
         </a>
+        <a
+          href="https://github.com/Stellar-Unified-Price-Oracle/Stellar-Unified-Price-Oracle-Frontend-/blob/main/docs/sdk-quickstart.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 mt-3 ml-2 px-3 py-1.5 text-sm rounded-lg border border-cyan-200 bg-cyan-50 text-cyan-800 hover:bg-cyan-100 dark:border-cyan-800 dark:bg-cyan-900/20 dark:text-cyan-400 dark:hover:bg-cyan-900/40 transition-colors"
+        >
+          SDK quickstarts
+        </a>
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-3 text-xs text-gray-500">
-        <span>{t('apiDocs.baseUrl')} <code className="font-mono text-gray-300">{config.apiUrl.replace(/\/api$/, '')}</code></span>
-        <span>{t('apiDocs.ws')} <code className="font-mono text-gray-300">{config.wsUrl}</code></span>
+      <div className="mb-4 flex flex-wrap gap-3 text-xs text-gray-600 dark:text-gray-400">
+        <span>
+          {t('apiDocs.baseUrl')}{' '}
+          <code className="font-mono text-gray-800 dark:text-gray-300">{config.apiUrl.replace(/\/api$/, '')}</code>
+        </span>
+        <span>
+          {t('apiDocs.ws')} <code className="font-mono text-gray-800 dark:text-gray-300">{config.wsUrl}</code>
+        </span>
       </div>
 
       <div className="space-y-4">

@@ -10,6 +10,7 @@ const en = {
   },
   footer: {
     text: 'Stellar Unified Price Oracle · Developer Portal & Analytics Dashboard',
+    securityLink: 'Security',
   },
 
   // ── Dashboard page ───────────────────────────────────────────────────────
@@ -243,6 +244,27 @@ const en = {
       error_invalidDelay: 'Step {{step}}: delay must be a non-negative number of minutes',
       error_outOfOrder: 'Step {{step}}: delay must not be earlier than the previous step',
     },
+    // ── Price-level retest detection (#491) ──────────────────────────────
+    retest: {
+      title: 'Notify on retest',
+      description: 'Also fire if the price re-enters this breached level after it exits.',
+    },
+    // ── Alert simulation (#490) ──────────────────────────────────────────
+    simulate: {
+      title: 'Test alert',
+      run: 'Run simulation',
+      description:
+        'Replays a synthetic price series through the same evaluation logic used live, marking exactly where this alert would fire.',
+      idle: 'Run a simulation to see how this alert behaves without touching your live configuration.',
+    },
+    // ── Per-alert channel routing (#492) ──────────────────────────────────
+    channels: {
+      title: 'Notify via',
+      description:
+        'Choose where this alert is delivered. Leave empty to use the channels configured in your notification settings.',
+      useGlobal: 'Use global defaults',
+      noneConfigured: 'No channels configured — set up channels in Notification Settings first.',
+    },
     // ── Preset library (#486) ──────────────────────────────────────────────
     presets: {
       title: 'Start from a preset',
@@ -301,6 +323,16 @@ const en = {
       snoozed: 'Snoozed',
       fired: 'Fired',
     },
+    // Alert health checks (#493)
+    health: {
+      badge: 'May never fire',
+      review: 'Review',
+      dismiss: 'Dismiss',
+      title: 'Health check',
+      reasonNeverSatisfiable: 'This threshold has never been reached in the observed history.',
+      reasonInsufficientHistory: 'Not enough price history yet to judge this condition.',
+      suggestion: 'Observed data suggests {{value}} instead.',
+    },
     // Fired one-time (#312)
     fired: {
       at: 'Fired at {{time}}',
@@ -340,6 +372,13 @@ const en = {
       progress: '{{fired}} of {{total}} steps fired',
       historyBadge: 'Escalation · {{channel}}',
     },
+    // ── Price-level retest detection (#491) ───────────────────────────────
+    retest: {
+      inBreach: 'In breach',
+      exited: 'Exited',
+      idle: 'Monitoring',
+      historyBadge: 'Retest',
+    },
   },
 
   // ── Alert preset library (#486) ─────────────────────────────────────────
@@ -351,7 +390,8 @@ const en = {
     },
     breakout: {
       name: 'Breakout',
-      description: 'Momentum confirmed across two windows: a strong 1-hour move still accelerating in the last 15 minutes.',
+      description:
+        'Momentum confirmed across two windows: a strong 1-hour move still accelerating in the last 15 minutes.',
       useCase: 'Spot a move that is more than noise — the trend is confirmed, not just starting.',
     },
     pegBreak: {
@@ -551,6 +591,7 @@ const en = {
     ws: 'WS:',
     tryItOut: 'Try it out',
     sending: 'Sending…',
+    cacheStatus: 'Cache:',
     copy: 'Copy',
     copied: 'Copied!',
   },
@@ -623,6 +664,60 @@ const en = {
       title: 'Wallet required',
       description:
         'Connect a Stellar wallet to use on-chain features like deploying and publishing to the oracle contract.',
+    },
+  },
+
+  // ── Command palette ───────────────────────────────────────────────────────
+  commandPalette: {
+    title: 'Command palette',
+    open: 'Open command palette',
+    openShort: 'Search',
+    placeholder: 'Type a command or search…',
+    noResults: 'No commands match “{{query}}”',
+    noResultsHint: 'Try a different search term.',
+    resultCount_one: '{{count}} command',
+    resultCount_other: '{{count}} commands',
+    hintNavigate: 'Navigate',
+    hintExecute: 'Execute',
+    hintClose: 'Close',
+    categories: {
+      navigation: 'Navigation',
+      pricePairs: 'Price Pairs',
+      filters: 'Filters & Sort',
+      alerts: 'Alerts',
+      exports: 'Export',
+      theme: 'Theme',
+      savedViews: 'Saved Views',
+    },
+    nav: {
+      webhooks: 'Webhooks',
+      security: 'Security',
+    },
+    filters: {
+      clear: 'Clear all filters',
+      allSources: 'Show all oracle sources',
+      sourceOnly: 'Show only {{source}}',
+      updatedWithin: 'Updated within {{window}}',
+      sortBy: 'Sort by {{field}}',
+      toggleDirection: 'Toggle sort direction',
+    },
+    alerts: {
+      create: 'Create a price alert…',
+      togglePanel: 'Toggle alerts panel',
+    },
+    exports: {
+      csv: 'Export as CSV',
+      json: 'Export as JSON',
+      xlsx: 'Export as XLSX',
+      columns: 'Select export columns…',
+      disabledNoData: 'No data to export',
+      disabledRateLimited: 'Export rate limit reached ({{seconds}}s)',
+    },
+    theme: {
+      light: 'Switch to light theme',
+      dark: 'Switch to dark theme',
+      system: 'Use system theme',
+      toggle: 'Toggle light/dark theme',
     },
   },
 } as const

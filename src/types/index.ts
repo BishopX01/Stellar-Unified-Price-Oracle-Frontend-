@@ -4,16 +4,41 @@ export type {
   PriceSyncState,
   LivePriceEntry,
   PriceHistoryEntry,
+  ExcludedSourceTick,
   PriceHistoryResponse,
   SourceName,
   SourceHealth,
+  // Aggregation breakdown (#459)
+  AggregationMode,
+  SourceBreakdownItem,
+  AggregationBreakdown,
+  // Move attribution (#580)
+  MoveAttribution,
+  SourceDelta,
   WsSubscribeMessage,
   WsUnsubscribeMessage,
+  WsHelloMessage,
+  WsWelcomeMessage,
   WsPriceUpdate,
   WsMessage,
+  WsPauseMessage,
+  WsResumeMessage,
+  WsPausedMessage,
+  WsResumedMessage,
 } from './price'
 
-export { isPriceData } from './price'
+export { isPriceData, ATTRIBUTION_RING_BUFFER_SIZE } from './price'
+
+// Governance types — see src/types/governance.ts
+export type { ProposalStatus, VoteChoice, VoteTally, GovernanceProposal } from './governance'
+// #698 — Transparent parameter registry
+export type { ParameterChangeEntry, ParameterRecord } from './governance'
+// #697 — Reputation decay and sybil resistance
+export type { SybilRisk, SourceReputationScore } from './governance'
+// #696 — Treasury and incentive accounting
+export type { AccountingPeriod, IncentiveLedgerEntry, SourceIncentiveSummary } from './governance'
+// #695 — Dispute and challenge process
+export type { DisputeStatus, DisputeEvidence, DisputeComment, PriceDispute } from './governance'
 
 // On-chain price / proof types — see src/types/onChainPrice.ts
 export type { OnChainPriceRecord, SourceContribution, PriceProof } from './onChainPrice'
@@ -59,8 +84,15 @@ export type {
   EscalationRuntimeState,
   EscalationValidationError,
 } from './alerts'
-export { isConditionGroup, migrateLegacyAlertConditions, validateEscalationPolicy, nextConditionId, singleConditionGroup } from './alerts'
+export {
+  isConditionGroup,
+  migrateLegacyAlertConditions,
+  validateEscalationPolicy,
+  nextConditionId,
+  singleConditionGroup,
+} from './alerts'
 
+import type { RetestState as _RetestState } from '../utils/retestDetector'
 import type {
   ConditionGroup as _ConditionGroup,
   EscalationPolicy as _EscalationPolicy,
@@ -69,6 +101,7 @@ import type {
   LogicOperator as _LogicOperator,
   EscalationStep as _EscalationStep,
 } from './alerts'
+import type { NotificationChannelId as _NotificationChannelId } from './notifications'
 
 export interface Alert {
   id: string
@@ -125,6 +158,24 @@ export interface Alert {
   /** Runtime progress through `escalationPolicy` for the current breach; null between breaches. */
   escalationState: _EscalationRuntimeState | null
 
+  // ── Per-alert channel routing (#492) ──────────────────────────────────────
+  /**
+   * Channels this alert specifically routes to. `null` (or an empty array) means
+   * "use the global default set" — every channel that is enabled in the
+   * notification config. When set, only the listed channels are used (still
+   * intersected with currently-enabled global channels at dispatch time).
+   */
+  channels: _NotificationChannelId[] | null
+
+  // ── Price-level retest detection (#491) ──────────────────────────────────
+  /**
+   * When true the alert additionally fires on `retest` events — re-entry to the
+   * breached zone after the condition exited. Off by default.
+   */
+  retestMode: boolean
+  /** Runtime retest state-machine progress; `null` when retest tracking is idle. */
+  retestState: _RetestState | null
+
   // ── State fields ──────────────────────────────────────────────────────────
   active: boolean
   createdAt: number
@@ -154,6 +205,14 @@ export interface AlertFormData {
   // ── Escalation policy (#487) ──────────────────────────────────────────────
   escalationEnabled: boolean
   escalationSteps: _EscalationStep[]
+
+  // ── Per-alert channel routing (#492) ──────────────────────────────────────
+  /** Explicitly-chosen channels; empty array means "use the global defaults". */
+  channels: _NotificationChannelId[]
+
+  // ── Price-level retest detection (#491) ──────────────────────────────────
+  /** Whether the alert fires on re-entry to the breached zone (retest). */
+  retestMode: boolean
 }
 
 /** A single record of a fired alert, kept for the alert history log (#309). */
@@ -177,6 +236,8 @@ export interface AlertHistoryEntry {
    * the alert's initial trigger — lets `AlertHistoryLog` distinguish and label them.
    */
   escalation?: { stepId: string; channel: _EscalationStep['channel']; delayMinutes: number } | null
+  /** Present when this entry records a retest-triggered fire (#491). */
+  retest?: { kind: 'breach' | 'exit' | 'retest'; cycle: number } | null
 }
 
 export interface AlertsContextType {
@@ -197,7 +258,9 @@ export interface AlertsContextType {
       | 'percentageBaselinePrice'
       | 'percentageBaselineTimestamp'
       | 'escalationState'
-    >,
+      | 'channels'
+      | 'retestState'
+    > & { channels?: Alert['channels'] },
   ) => Alert | null
   updateAlert: (id: string, updates: Partial<Omit<Alert, 'id' | 'createdAt'>>) => void
   removeAlert: (id: string) => void

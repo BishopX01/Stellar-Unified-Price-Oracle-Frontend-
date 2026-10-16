@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { computeSourceMetrics, exportLeaderboardCsv } from './export'
 import type { SourceHealth, PriceHistoryEntry } from '../types'
+import { computeSourceMetrics, exportLeaderboardCsv } from './export'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const NOW = 1_700_000_000_000
+const WINDOW_MS = 24 * 60 * 60 * 1000 // 24 h
 
 function makeHealth(overrides: Partial<SourceHealth> = {}): SourceHealth {
   return {
@@ -68,10 +69,7 @@ describe('computeSourceMetrics', () => {
 
   it('computes 0% uptime when source never appears in window entries', () => {
     const history: Record<string, PriceHistoryEntry[]> = {
-      'BTC/USD': [
-        makeEntry(['redstone'], NOW - 1_000),
-        makeEntry(['redstone'], NOW - 2_000),
-      ],
+      'BTC/USD': [makeEntry(['redstone'], NOW - 1_000), makeEntry(['redstone'], NOW - 2_000)],
     }
     const sourceHealths = [makeHealth({ source: 'chainlink' })]
     const [metric] = computeSourceMetrics(sourceHealths, history, WINDOW_MS)
@@ -80,10 +78,7 @@ describe('computeSourceMetrics', () => {
 
   it('computes partial uptime correctly (50%)', () => {
     const history: Record<string, PriceHistoryEntry[]> = {
-      'BTC/USD': [
-        makeEntry(['chainlink'], NOW - 1_000),
-        makeEntry(['redstone'], NOW - 2_000),
-      ],
+      'BTC/USD': [makeEntry(['chainlink'], NOW - 1_000), makeEntry(['redstone'], NOW - 2_000)],
     }
     const sourceHealths = [makeHealth({ source: 'chainlink' })]
     const [metric] = computeSourceMetrics(sourceHealths, history, WINDOW_MS)
@@ -94,10 +89,7 @@ describe('computeSourceMetrics', () => {
     const insideWindow = NOW - 1_000
     const outsideWindow = NOW - WINDOW_MS - 1_000 // older than window
     const history: Record<string, PriceHistoryEntry[]> = {
-      'BTC/USD': [
-        makeEntry(['chainlink'], insideWindow),
-        makeEntry(['chainlink'], outsideWindow),
-      ],
+      'BTC/USD': [makeEntry(['chainlink'], insideWindow), makeEntry(['chainlink'], outsideWindow)],
     }
     const sourceHealths = [makeHealth({ source: 'chainlink' })]
     const [metric] = computeSourceMetrics(sourceHealths, history, WINDOW_MS)
@@ -174,9 +166,26 @@ describe('exportLeaderboardCsv', () => {
     vi.restoreAllMocks()
   })
 
+  it('computes 0-100 reliabilityScore correctly', () => {
+    const history: Record<string, PriceHistoryEntry[]> = {
+      'BTC/USD': [makeEntry(['chainlink'], NOW - 1_000)],
+    }
+    const sourceHealths = [makeHealth({ source: 'chainlink', latency: 100, lastUpdate: NOW - 1000 })]
+    const [metric] = computeSourceMetrics(sourceHealths, history, WINDOW_MS)
+    expect(metric.reliabilityScore).toBeGreaterThanOrEqual(0)
+    expect(metric.reliabilityScore).toBeLessThanOrEqual(100)
+  })
+
   it('triggers a download', () => {
     exportLeaderboardCsv([
-      { source: 'chainlink', uptimePercent: 99, meanLatencyMs: 120, stalenessMs: 5000, trend: 'up' },
+      {
+        source: 'chainlink',
+        uptimePercent: 99,
+        meanLatencyMs: 120,
+        stalenessMs: 5000,
+        reliabilityScore: 95,
+        trend: 'up',
+      },
     ])
     expect(createObjectURLSpy).toHaveBeenCalled()
     expect(clickSpy).toHaveBeenCalled()
@@ -191,7 +200,14 @@ describe('exportLeaderboardCsv', () => {
       return el as unknown as HTMLAnchorElement
     })
     exportLeaderboardCsv([
-      { source: 'redstone', uptimePercent: 80, meanLatencyMs: null, stalenessMs: 60000, trend: 'down' },
+      {
+        source: 'redstone',
+        uptimePercent: 80,
+        meanLatencyMs: null,
+        stalenessMs: 60000,
+        reliabilityScore: 75,
+        trend: 'down',
+      },
     ])
     expect(anchors[0].download).toMatch(/reliability-leaderboard.*\.csv$/)
   })

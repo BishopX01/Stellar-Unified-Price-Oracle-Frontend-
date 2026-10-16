@@ -29,9 +29,7 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
   return {
     ...actual,
     useQuery: vi.fn(() => ({
-      data: [
-        { assetPair: 'BTC/USD', price: 50000, timestamp: Date.now(), confidence: 0.99, sources: ['chainlink'] },
-      ],
+      data: [{ assetPair: 'BTC/USD', price: 50000, timestamp: Date.now(), confidence: 0.99, sources: ['chainlink'] }],
       isLoading: false,
       error: null,
       isFetching: false,
@@ -56,16 +54,22 @@ vi.mock('./api/rest', async (importOriginal) => {
 })
 
 vi.mock('./api/websocket', () => ({
-  WebSocketClient: vi.fn(() => ({
-    status: 'connected',
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    onMessage: vi.fn(() => vi.fn()),
-    onStatusChange: vi.fn(() => vi.fn()),
-    subscribe: vi.fn(),
-    unsubscribe: vi.fn(),
-    send: vi.fn(),
-  })),
+  // A `vi.fn()` wrapping an arrow function can't be invoked with `new`
+  // (arrow functions have no `[[Construct]]`) — PriceProvider does
+  // `new WebSocketClient()`, so this must be a regular `function` that
+  // returns the mock instance (constructor return-value override).
+  WebSocketClient: vi.fn(function () {
+    return {
+      status: 'connected',
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: vi.fn(() => vi.fn()),
+      onStatusChange: vi.fn(() => vi.fn()),
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+      send: vi.fn(),
+    }
+  }),
 }))
 
 vi.mock('./preferences/PreferencesContext', () => ({
@@ -91,15 +95,13 @@ function makeQueryClient() {
 
 function Wrapper({ children }: { children: ReactNode }) {
   return (
-    <MemoryRouter initialEntries={['/']}>
+    <MemoryRouter initialEntries={['/dashboard']}>
       <QueryClientProvider client={makeQueryClient()}>
         <ErrorReporterProvider>
           <PreferencesProvider>
             <ToastProvider>
               <WalletProvider>
-                <PriceProvider>
-                  {children}
-                </PriceProvider>
+                <PriceProvider>{children}</PriceProvider>
               </WalletProvider>
             </ToastProvider>
           </PreferencesProvider>
@@ -119,9 +121,7 @@ describe('App provider hierarchy', () => {
   it('renders the Dashboard without throwing when PriceProvider wraps consumers for real', async () => {
     render(<AppContent />, { wrapper: Wrapper })
 
-    expect(
-      await screen.findByRole('heading', { name: 'Price Oracle Dashboard' }, FIND),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Price Oracle Dashboard' }, FIND)).toBeInTheDocument()
     expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument()
   })
 })

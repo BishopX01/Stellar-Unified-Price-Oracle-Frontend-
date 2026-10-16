@@ -12,15 +12,31 @@
  * `upperThreshold`/`lowerThreshold`/percentage fields — into the new condition-group
  * shape, so evaluation code has a single code path regardless of an alert's age.
  */
-import type { Alert, AlertPercentageDirection, AlertTimeWindow } from './index'
 import type { NotificationChannelId } from './notifications'
+import type { Alert, AlertPercentageDirection, AlertTimeWindow } from './index'
 
 // ---------------------------------------------------------------------------
 // Compound conditions (#485)
 // ---------------------------------------------------------------------------
 
 /** What a single condition compares against. */
-export type ConditionField = 'price' | 'percentageChange'
+export type ConditionField = 'price' | 'percentageChange' | 'schedule'
+
+/**
+ * Time predicate (#646). All wall-clock fields are interpreted in `timeZone` (IANA name,
+ * so DST is handled by the platform tz database). A schedule is active at instant `t`
+ * when every specified part matches; unspecified parts match everything.
+ */
+export interface ScheduleSpec {
+  /** IANA time zone, e.g. 'America/New_York'. */
+  timeZone: string
+  /** 0 (Sunday) - 6 (Saturday). */
+  daysOfWeek?: number[]
+  /** Daily window 'HH:MM' [start, end). If start > end the window wraps past midnight. */
+  window?: { start: string; end: string }
+  /** 5-field cron (minute hour day-of-month month day-of-week): *, lists, ranges, steps. */
+  cron?: string
+}
 
 /** Comparison operator for a single condition. */
 export type ConditionOperator = 'gt' | 'gte' | 'lt' | 'lte' | 'eq'
@@ -36,6 +52,8 @@ export interface AlertCondition {
   value: number
   /** Only meaningful when `field === 'percentageChange'`. Defaults to '1hr'. */
   window?: AlertTimeWindow
+  /** Only meaningful when `field === 'schedule'`: true while the schedule is active. */
+  schedule?: ScheduleSpec
 }
 
 /**
@@ -59,6 +77,11 @@ export interface PriceEvaluationState {
   price: number
   /** Percentage change keyed by time window, when known. */
   percentageChange?: Partial<Record<AlertTimeWindow, number>>
+  /**
+   * Evaluation instant in epoch ms (#646). Injected so schedule rules are deterministic
+   * and testable with a fake clock; schedule conditions are false when absent.
+   */
+  nowMs?: number
 }
 
 let conditionIdCounter = 0
@@ -100,8 +123,20 @@ export function migrateLegacyAlertConditions(
     const window = alert.percentageWindow ?? '1hr'
     const direction: AlertPercentageDirection = alert.percentageDirection ?? 'either'
 
-    const up: AlertCondition = { id: nextConditionId(), field: 'percentageChange', operator: 'gte', value: threshold, window }
-    const down: AlertCondition = { id: nextConditionId(), field: 'percentageChange', operator: 'lte', value: -threshold, window }
+    const up: AlertCondition = {
+      id: nextConditionId(),
+      field: 'percentageChange',
+      operator: 'gte',
+      value: threshold,
+      window,
+    }
+    const down: AlertCondition = {
+      id: nextConditionId(),
+      field: 'percentageChange',
+      operator: 'lte',
+      value: -threshold,
+      window,
+    }
 
     if (direction === 'up') return singleConditionGroup(up)
     if (direction === 'down') return singleConditionGroup(down)

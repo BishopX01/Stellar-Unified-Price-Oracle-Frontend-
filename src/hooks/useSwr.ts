@@ -49,6 +49,16 @@ export interface SwrResult<T> {
 }
 
 /**
+ * Drops every cached entry and in-flight dedupe promise. Exposed for test
+ * isolation — the cache is module-level, so two cases that share a key would
+ * otherwise bleed data into each other.
+ */
+export function clearSwrCache(): void {
+  cache.clear()
+  inFlight.clear()
+}
+
+/**
  * Minimal stale-while-revalidate hook for data fetching.
  *
  * Key improvements over the original implementation:
@@ -86,13 +96,7 @@ export function useSwr<T>(
   fetcher: (signal?: AbortSignal) => Promise<T>,
   options: SwrOptions = {},
 ): SwrResult<T> {
-  const {
-    refreshInterval = 0,
-    staleTime = 0,
-    retryCount = 0,
-    enabled = true,
-    onError,
-  } = options
+  const { refreshInterval = 0, staleTime = 0, retryCount = 0, enabled = true, onError } = options
 
   const cached = cache.get(key) as CacheEntry | undefined
 
@@ -106,6 +110,8 @@ export function useSwr<T>(
   const retries = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
   const mountedRef = useRef(true)
+  /** Serialised form of the last value written to `data`, for identity-stability. */
+  const lastDataJsonRef = useRef<string | null>(null)
   const keyRef = useRef(key)
   const fetcherRef = useRef(fetcher)
   fetcherRef.current = fetcher
@@ -144,7 +150,10 @@ export function useSwr<T>(
       if (!resultPromise) {
         resultPromise = fetcherRef.current(controller.signal)
         inFlight.set(keyRef.current, resultPromise as Promise<unknown>)
-        resultPromise.finally(() => inFlight.delete(keyRef.current))
+        // The rejection is handled by the `await` below; this derived chain only
+        // clears the in-flight entry, so drain it to avoid an unhandled rejection
+        // when the fetcher rejects (which would fail CI via vitest's exit code).
+        resultPromise.finally(() => inFlight.delete(keyRef.current)).catch(() => {})
       }
 
       const result = await resultPromise

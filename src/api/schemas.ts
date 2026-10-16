@@ -15,12 +15,20 @@ export const PriceDataSchema = z.object({
 /**
  * Strict Zod schema for {@link import('../types/price').PriceHistoryEntry}.
  * All fields are required. Extra properties are stripped.
+ * `excludedSources` is optional — present only when the API includes exclusion metadata (#461).
  */
+export const ExcludedSourceTickSchema = z.object({
+  source: z.string().min(1),
+  reportedPrice: z.number().finite(),
+  reason: z.string(),
+})
+
 export const PriceHistoryEntrySchema = z.object({
   price: z.number().finite(),
   timestamp: z.number().int().min(0),
   confidence: z.number().min(0).max(1),
   sources: z.array(z.string().min(1)),
+  excludedSources: z.array(ExcludedSourceTickSchema).optional(),
 })
 
 export const PriceHistoryResponseSchema = z.object({
@@ -89,6 +97,15 @@ const EscalationRuntimeStateSchema = z.object({
   firedStepIds: z.array(z.string()),
 })
 
+// Runtime retest state machine progress (#491) — see utils/retestDetector.ts.
+const RetestPhaseSchema = z.enum(['idle', 'inBreach', 'exited'])
+const RetestStateSchema = z.object({
+  phase: RetestPhaseSchema,
+  cycles: z.number().int().min(0),
+  lastEventPrice: z.number(),
+  lastEventAt: z.number(),
+})
+
 // ── Alert schema (localStorage deserialization) ──────────────────────────────
 
 export const AlertSchema = z.object({
@@ -126,6 +143,13 @@ export const AlertSchema = z.object({
   escalationPolicy: EscalationPolicySchema.nullable().default(null),
   escalationState: EscalationRuntimeStateSchema.nullable().default(null),
 
+  // Per-alert channel routing (#492) — null/absent means "use global defaults".
+  channels: z.array(NotificationChannelIdSchema).nullable().default(null),
+
+  // Price-level retest detection (#491)
+  retestMode: z.boolean().default(false),
+  retestState: RetestStateSchema.nullable().default(null),
+
   // State fields
   active: z.boolean(),
   createdAt: z.number(),
@@ -154,6 +178,11 @@ export const AlertHistoryEntrySchema = z.object({
     .object({ stepId: z.string(), channel: NotificationChannelIdSchema, delayMinutes: z.number() })
     .nullable()
     .optional(),
+  // Retest-triggered fire metadata (#491).
+  retest: z
+    .object({ kind: z.enum(['breach', 'exit', 'retest']), cycle: z.number() })
+    .nullable()
+    .optional(),
 })
 
 export const AlertHistoryArraySchema = z.array(AlertHistoryEntrySchema)
@@ -167,15 +196,176 @@ export const WsPriceUpdateSchema = z.object({
   timestamp: z.number(),
   confidence: z.number().min(0).max(1),
   sources: z.array(z.string()),
+  /**
+   * Optional per-source prices provided by the server.
+   * Keys are source names; values are individual source prices.
+   */
+  sourcePrices: z.record(z.string(), z.number()).optional(),
   /** Optional monotonic sequence number for duplicate detection. */
   seq: z.number().optional(),
 })
+
+/** Server handshake response confirming the WS protocol version (#472). */
+export const WsWelcomeMessageSchema = z.object({
+  type: z.literal('welcome'),
+  protocolVersion: z.number().int().min(0),
+})
+
+/** Server ack confirming inbound updates were paused/resumed for this connection (#469). */
+export const WsPausedMessageSchema = z.object({ type: z.literal('paused') })
+export const WsResumedMessageSchema = z.object({ type: z.literal('resumed') })
 
 /**
  * Discriminated union of all known WebSocket message types.
  * Add new variants here as the server protocol evolves.
  */
-export const WsMessageSchema = z.discriminatedUnion('type', [WsPriceUpdateSchema])
+export const WsMessageSchema = z.discriminatedUnion('type', [
+  WsPriceUpdateSchema,
+  WsWelcomeMessageSchema,
+  WsPausedMessageSchema,
+  WsResumedMessageSchema,
+])
+
+// ── On-chain price proof schemas ─────────────────────────────────────────────
+
+/** Per-source signed contribution embedded in a {@link PriceProof}. */
+const SourceContributionSchema = z.object({
+  source: z.string(),
+  price: z.number().finite(),
+  timestamp: z.number().int().min(0),
+  signature: z.string(),
+  publicKey: z.string(),
+})
+
+/**
+ * Validation schema for the on-chain price proof payload returned by
+ * `GET /api/prices/:pair/proof`. Mirrors {@link import('../types/onChainPrice').PriceProof}.
+ */
+export const PriceProofSchema = z.object({
+  record: z.object({
+    assetPair: z.string(),
+    price: z.number().finite(),
+    priceScaled: z.string(),
+    priceDecimals: z.number().int().min(0),
+    timestamp: z.number().int().min(0),
+    confidence: z.number().min(0).max(1),
+    sources: z.array(z.string()),
+    version: z.number().int().min(0),
+  }),
+  contributions: z.array(SourceContributionSchema),
+  aggregateSignature: z.string(),
+  contractId: z.string(),
+  ledgerSequence: z.number().int().min(0),
+  transactionHash: z.string(),
+  network: z.enum(['testnet', 'mainnet']),
+})
+
+// ── Governance schemas ───────────────────────────────────────────────────────
+//
+// Strict by design. Unlike the price schemas (whose callers fall back to raw
+// data so a feed outage degrades gracefully), a governance payload that fails
+// validation is *dropped* — see `fetchGovernanceProposals`. A malformed or
+// tampered tally must never reach the UI.
+
+/** Non-negative whole vote count. */
+export const VoteTallySchema = z.object({
+  for: z.number().int().min(0),
+  against: z.number().int().min(0),
+  abstain: z.number().int().min(0),
+})
+
+/**
+ * Strict schema for {@link import('../types/governance').GovernanceProposal}.
+ * All fields are required (nullable ones must be explicitly `null`, not absent)
+ * so a server omission is caught here rather than silently rendered as zero.
+ */
+export const GovernanceProposalSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  summary: z.string(),
+  status: z.enum(['pending', 'active', 'passed', 'rejected', 'cancelled', 'executed']),
+  createdAt: z.number().int().min(0),
+  closesAt: z.number().int().min(0).nullable(),
+  tally: VoteTallySchema,
+  quorum: z.number().finite().nonnegative().nullable(),
+  totalVotingPower: z.number().finite().nonnegative().nullable(),
+  category: z.string().nullable(),
+  relatedSources: z.array(z.string()),
+})
+
+/** Response of `GET /api/governance/proposals`. */
+export const GovernanceProposalsSchema = z.array(GovernanceProposalSchema)
+
+// ── #698 Parameter registry schemas ──────────────────────────────────────────
+
+export const ParameterEntrySchema = z.object({
+  key: z.string().min(1),
+  value: z.string(),
+  description: z.string(),
+  owner: z.string().min(1),
+  updatedAt: z.number().int().min(0),
+  category: z.string().min(1),
+})
+
+export const ParameterRegistrySchema = z.array(ParameterEntrySchema)
+
+export const ParameterChangeLogEntrySchema = z.object({
+  key: z.string().min(1),
+  previousValue: z.string(),
+  nextValue: z.string(),
+  changedAt: z.number().int().min(0),
+  changedBy: z.string().min(1),
+  reason: z.string().nullable(),
+})
+
+export const ParameterChangeLogSchema = z.array(ParameterChangeLogEntrySchema)
+
+// ── #697 Source reputation schemas ───────────────────────────────────────────
+
+export const SourceReputationSchema = z.object({
+  sourceId: z.string().min(1),
+  score: z.number().min(0).max(1),
+  decayedScore: z.number().min(0).max(1),
+  sybilResistanceWeight: z.number().min(0).max(1),
+  lastDecayAt: z.number().int().min(0),
+  inactivePeriods: z.number().int().min(0),
+})
+
+export const SourceReputationsSchema = z.array(SourceReputationSchema)
+
+// ── #696 Treasury schemas ─────────────────────────────────────────────────────
+
+export const TreasuryEntrySchema = z.object({
+  sourceId: z.string().min(1),
+  accruedRewards: z.string().min(1),
+  claimedRewards: z.string().min(1),
+  pendingRewards: z.string().nullable(),
+  uptimeScore: z.number().min(0).max(1),
+  accuracyScore: z.number().min(0).max(1),
+  lastSettledAt: z.number().int().min(0).nullable(),
+})
+
+export const TreasurySchema = z.array(TreasuryEntrySchema)
+
+// ── #695 Dispute schemas ──────────────────────────────────────────────────────
+
+export const PriceDisputeSchema = z.object({
+  id: z.string().min(1),
+  assetPair: z.string().min(1),
+  disputedPrice: z.number().finite(),
+  priceTimestamp: z.number().int().min(0),
+  status: z.enum(['open', 'under_review', 'resolved', 'dismissed']),
+  challenger: z.string().min(1),
+  reason: z.string().min(1),
+  evidenceUrl: z.string().nullable(),
+  createdAt: z.number().int().min(0),
+  resolvedAt: z.number().int().min(0).nullable(),
+  outcome: z.enum(['upheld', 'rejected', 'inconclusive']).nullable(),
+  resolutionNotes: z.string().nullable(),
+  flaggedSources: z.array(z.string()),
+})
+
+export const PriceDisputesSchema = z.array(PriceDisputeSchema)
 
 // ── Type inference from schemas ──────────────────────────────────────────────
 
@@ -186,3 +376,96 @@ export type AlertFromSchema = z.infer<typeof AlertSchema>
 export type AlertHistoryEntryFromSchema = z.infer<typeof AlertHistoryEntrySchema>
 export type WsMessageFromSchema = z.infer<typeof WsMessageSchema>
 export type PriceProofFromSchema = z.infer<typeof PriceProofSchema>
+export type GovernanceProposalFromSchema = z.infer<typeof GovernanceProposalSchema>
+
+// ── #698 Parameter registry schemas ─────────────────────────────────────────
+
+export const ParameterChangeEntrySchema = z.object({
+  version: z.number().int().min(1),
+  changedAt: z.number().int().min(0),
+  changedBy: z.string().min(1),
+  previousValue: z.string(),
+  newValue: z.string(),
+  reason: z.string(),
+})
+
+export const ParameterRecordSchema = z.object({
+  key: z.string().min(1),
+  label: z.string().min(1),
+  category: z.string().min(1),
+  currentValue: z.string(),
+  owner: z.string().min(1),
+  lastChangedAt: z.number().int().min(0).nullable(),
+  history: z.array(ParameterChangeEntrySchema),
+})
+
+// ── #697 Reputation decay and sybil resistance schemas ──────────────────────
+
+export const SourceReputationScoreSchema = z.object({
+  sourceId: z.string().min(1),
+  score: z.number().min(0).max(1).nullable(),
+  rawScore: z.number().min(0).nullable(),
+  decayHalfLifeMs: z.number().int().positive(),
+  lastScoredAt: z.number().int().min(0).nullable(),
+  lastDecayAt: z.number().int().min(0).nullable(),
+  sybilRisk: z.enum(['low', 'medium', 'high', 'unknown']),
+  sybilAttenuationFactor: z.number().min(0).max(1),
+  sybilClusterId: z.string().nullable(),
+})
+
+// ── #696 Incentive accounting schemas ───────────────────────────────────────
+
+export const IncentiveLedgerEntrySchema = z.object({
+  seq: z.number().int().min(1),
+  recordedAt: z.number().int().min(0),
+  rewardType: z.enum(['accuracy', 'uptime', 'latency', 'staking', 'slash']),
+  amount: z.string().min(1),
+  runningBalance: z.string().min(1),
+  note: z.string().nullable(),
+})
+
+export const SourceIncentiveSummarySchema = z.object({
+  sourceId: z.string().min(1),
+  period: z.enum(['epoch', 'daily', 'weekly', 'monthly']),
+  periodStart: z.number().int().min(0),
+  periodEnd: z.number().int().min(0),
+  totalEarned: z.string().min(1),
+  totalSlashed: z.string().min(1),
+  netChange: z.string().min(1),
+  cumulativeBalance: z.string().nullable(),
+  ledger: z.array(IncentiveLedgerEntrySchema),
+})
+
+// ── #695 Dispute process schemas ─────────────────────────────────────────────
+
+export const DisputeEvidenceSchema = z.object({
+  id: z.string().min(1),
+  submittedBy: z.string().min(1),
+  submittedAt: z.number().int().min(0),
+  description: z.string(),
+  uri: z.string().nullable(),
+})
+
+export const DisputeCommentSchema = z.object({
+  id: z.string().min(1),
+  author: z.string().min(1),
+  postedAt: z.number().int().min(0),
+  body: z.string(),
+})
+
+export const PriceDisputeSchema = z.object({
+  id: z.string().min(1),
+  assetPair: z.string().min(1),
+  contestedAt: z.number().int().min(0),
+  contestedPrice: z.string().min(1),
+  challengerPrice: z.string().nullable(),
+  challenger: z.string().min(1),
+  status: z.enum(['open', 'under_review', 'resolved_upheld', 'resolved_overturned', 'withdrawn']),
+  openedAt: z.number().int().min(0),
+  resolutionDeadline: z.number().int().min(0).nullable(),
+  rationale: z.string(),
+  impliedSources: z.array(z.string()),
+  evidence: z.array(DisputeEvidenceSchema),
+  comments: z.array(DisputeCommentSchema),
+  resolutionNote: z.string().nullable(),
+})

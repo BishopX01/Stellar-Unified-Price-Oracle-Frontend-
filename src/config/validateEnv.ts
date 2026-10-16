@@ -6,19 +6,26 @@ import { z } from 'zod'
  * VITE_API_URL and VITE_WS_URL are required; all others are optional.
  * Unknown keys are stripped so extra variables do not cause validation errors.
  */
+// Vite injects `''` for declared-but-unset env vars. Treat an empty string as
+// unset so the documented defaults (e.g. `/api`) apply instead of failing
+// validation or leaking an empty URL into the app.
+const nonEmptyString = (message: string, fallback: string) =>
+  z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().min(1, message).default(fallback),
+  )
+
 const envSchema = z.object({
   // ── API ────────────────────────────────────────────────────────────────────
-  VITE_API_URL: z.string().min(1, 'VITE_API_URL must not be empty').default('/api'),
+  VITE_API_URL: nonEmptyString('VITE_API_URL must not be empty', '/api'),
 
-  VITE_WS_URL: z.string().min(1, 'VITE_WS_URL must not be empty').default('ws://localhost:3000'),
+  VITE_WS_URL: nonEmptyString('VITE_WS_URL must not be empty', 'ws://localhost:3000'),
 
   VITE_OPENAPI_SPEC_URL: z.string().default(''),
 
   // ── On-chain ───────────────────────────────────────────────────────────────
   // Soroban network the on-chain comparison panel reads from by default.
-  VITE_ORACLE_NETWORK: z
-    .enum(['mainnet', 'testnet', 'futurenet'])
-    .default('testnet'),
+  VITE_ORACLE_NETWORK: z.enum(['mainnet', 'testnet', 'futurenet']).default('testnet'),
 
   // ── Analytics ──────────────────────────────────────────────────────────────
   VITE_ANALYTICS_URL: z.string().default(''),
@@ -33,6 +40,13 @@ const envSchema = z.object({
   // Which Stellar network the on-chain oracle contract (and explorer links for
   // the price Proof tab) resolve against. See docs/adr/0001-onchain-soroban-price-oracle.md.
   VITE_STELLAR_NETWORK: z.enum(['testnet', 'mainnet']).default('testnet'),
+
+  // ── Developer portal SSO (#501) ────────────────────────────────────────────
+  // OAuth2/OIDC client IDs for the dev-portal sign-in. Public client IDs only —
+  // no client secret ever belongs in frontend code. Token exchange and session
+  // cookies are handled by the backend `/auth/*` endpoints. See src/auth/.
+  VITE_OAUTH_GITHUB_CLIENT_ID: z.string().default(''),
+  VITE_OAUTH_GOOGLE_CLIENT_ID: z.string().default(''),
 })
 
 export type Env = z.infer<typeof envSchema>

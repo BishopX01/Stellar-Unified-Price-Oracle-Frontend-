@@ -46,8 +46,36 @@ async function stableScreenshot(page: Page): Promise<Buffer> {
   // Wait for fonts and lazy images
   await page.evaluate(() => document.fonts.ready)
   await page.waitForLoadState('networkidle')
+  // The app mounts async content (charts, panels) shortly after load, which can
+  // change the document height after networkidle fires. Capture only once the
+  // height stops changing so baselines are deterministic.
+  await waitForStableLayout(page)
 
   return page.screenshot({ fullPage: true })
+}
+
+/**
+ * Waits until the document height has been unchanged across consecutive polls
+ * (rAF cadence), i.e. async renders have settled. Timed out at 15s so a page
+ * that genuinely never stabilises fails loudly instead of hanging.
+ */
+async function waitForStableLayout(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () => {
+      const doc = document as Document & { __ph?: number; __pc?: number }
+      const h = document.documentElement.scrollHeight
+      if (doc.__ph === h) {
+        doc.__pc = (doc.__pc ?? 0) + 1
+        // ~250 ms of unchanged height before we call it stable
+        return doc.__pc >= 15
+      }
+      doc.__ph = h
+      doc.__pc = 0
+      return false
+    },
+    undefined,
+    { timeout: 15_000 },
+  )
 }
 
 /**
@@ -69,20 +97,29 @@ async function waitForPageReady(page: Page): Promise<void> {
   await page.waitForLoadState('networkidle')
   // Allow up to 10 s for the main heading or a known content element
   await Promise.race([
-    page.getByRole('heading', { name: 'Price Oracle Dashboard' }).waitFor({ timeout: 10_000 }).catch(() => {}),
-    page.getByRole('main').waitFor({ timeout: 10_000 }).catch(() => {}),
+    page
+      .getByRole('heading', { name: 'Price Oracle Dashboard' })
+      .waitFor({ timeout: 10_000 })
+      .catch(() => {}),
+    page
+      .getByRole('main')
+      .waitFor({ timeout: 10_000 })
+      .catch(() => {}),
   ])
 }
 
 // ── Dashboard — viewport-specific screenshots ───────────────────────────────
 
-for (const [name, size] of Object.entries(VIEWPORTS) as [keyof typeof VIEWPORTS, typeof VIEWPORTS[keyof typeof VIEWPORTS]][]) {
+for (const [name, size] of Object.entries(VIEWPORTS) as [
+  keyof typeof VIEWPORTS,
+  (typeof VIEWPORTS)[keyof typeof VIEWPORTS],
+][]) {
   test.describe(`Dashboard — ${name} (${size.width}×${size.height})`, () => {
     test.use({ viewport: size })
 
     test(`dark mode baseline — ${name}`, async ({ page }) => {
       await setColorScheme(page, 'dark')
-      await page.goto('/')
+      await page.goto('/dashboard')
       await waitForPageReady(page)
 
       const screenshot = await stableScreenshot(page)
@@ -93,7 +130,7 @@ for (const [name, size] of Object.entries(VIEWPORTS) as [keyof typeof VIEWPORTS,
 
     test(`light mode baseline — ${name}`, async ({ page }) => {
       await setColorScheme(page, 'light')
-      await page.goto('/')
+      await page.goto('/dashboard')
       await waitForPageReady(page)
 
       const screenshot = await stableScreenshot(page)
@@ -145,8 +182,14 @@ test.describe('Price Detail page', () => {
     await page.waitForLoadState('networkidle')
     // Accept the page whether it shows chart or an error/loading state
     await Promise.race([
-      page.getByRole('button', { name: /go back/i }).waitFor({ timeout: 10_000 }).catch(() => {}),
-      page.getByRole('alert').waitFor({ timeout: 10_000 }).catch(() => {}),
+      page
+        .getByRole('button', { name: /go back/i })
+        .waitFor({ timeout: 10_000 })
+        .catch(() => {}),
+      page
+        .getByRole('alert')
+        .waitFor({ timeout: 10_000 })
+        .catch(() => {}),
     ])
 
     const screenshot = await stableScreenshot(page)
@@ -161,8 +204,14 @@ test.describe('Price Detail page', () => {
     await page.goto('/prices/BTC%2FUSD')
     await page.waitForLoadState('networkidle')
     await Promise.race([
-      page.getByRole('button', { name: /go back/i }).waitFor({ timeout: 10_000 }).catch(() => {}),
-      page.getByRole('alert').waitFor({ timeout: 10_000 }).catch(() => {}),
+      page
+        .getByRole('button', { name: /go back/i })
+        .waitFor({ timeout: 10_000 })
+        .catch(() => {}),
+      page
+        .getByRole('alert')
+        .waitFor({ timeout: 10_000 })
+        .catch(() => {}),
     ])
 
     const screenshot = await stableScreenshot(page)
@@ -177,8 +226,14 @@ test.describe('Price Detail page', () => {
     await page.goto('/prices/BTC%2FUSD')
     await page.waitForLoadState('networkidle')
     await Promise.race([
-      page.getByRole('button', { name: /go back/i }).waitFor({ timeout: 10_000 }).catch(() => {}),
-      page.getByRole('alert').waitFor({ timeout: 10_000 }).catch(() => {}),
+      page
+        .getByRole('button', { name: /go back/i })
+        .waitFor({ timeout: 10_000 })
+        .catch(() => {}),
+      page
+        .getByRole('alert')
+        .waitFor({ timeout: 10_000 })
+        .catch(() => {}),
     ])
 
     const screenshot = await stableScreenshot(page)
@@ -196,7 +251,10 @@ test.describe('API Docs page', () => {
     await setColorScheme(page, 'dark')
     await page.goto('/api-docs')
     await page.waitForLoadState('networkidle')
-    await page.getByRole('main').waitFor({ timeout: 10_000 }).catch(() => {})
+    await page
+      .getByRole('main')
+      .waitFor({ timeout: 10_000 })
+      .catch(() => {})
 
     const screenshot = await stableScreenshot(page)
     expect(screenshot).toMatchSnapshot('api-docs-dark-desktop.png', {
@@ -209,7 +267,10 @@ test.describe('API Docs page', () => {
     await setColorScheme(page, 'light')
     await page.goto('/api-docs')
     await page.waitForLoadState('networkidle')
-    await page.getByRole('main').waitFor({ timeout: 10_000 }).catch(() => {})
+    await page
+      .getByRole('main')
+      .waitFor({ timeout: 10_000 })
+      .catch(() => {})
 
     const screenshot = await stableScreenshot(page)
     expect(screenshot).toMatchSnapshot('api-docs-light-desktop.png', {

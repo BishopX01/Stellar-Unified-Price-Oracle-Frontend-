@@ -16,6 +16,10 @@
 import { memo, useState, useEffect, useCallback } from 'react'
 import { subscribePerformance, type PerformanceSnapshot } from '../utils/performanceMonitor'
 import { subscribeRenderInfo, getRenderCounts, type RenderInfo } from '../hooks/useRenderTracker'
+import { RpcHealthPanel } from './RpcHealthPanel'
+import { getWorkerPoolDiagnostics, type WorkerPoolDiagnostics } from '../workers/workerPool'
+import { subscribeMemoryProfiler, type MemoryProfilerSnapshot } from '../utils/memoryProfiler'
+import { getCacheDiagnostics, type CacheDiagnostics } from '../utils/cacheBudgets'
 
 function fpsColour(fps: number): string {
   if (fps === 0) return 'text-slate-400'
@@ -45,6 +49,9 @@ export const PerformanceOverlay = memo(function PerformanceOverlay() {
   )
   const [perf, setPerf] = useState<PerformanceSnapshot | null>(null)
   const [renderRows, setRenderRows] = useState<RenderRow[]>([])
+  const [pools, setPools] = useState<WorkerPoolDiagnostics[]>([])
+  const [mem, setMem] = useState<MemoryProfilerSnapshot | null>(null)
+  const [caches, setCaches] = useState<CacheDiagnostics[]>([])
 
   const toggleVisible = useCallback(() => {
     setVisible((v) => {
@@ -72,6 +79,28 @@ export const PerformanceOverlay = memo(function PerformanceOverlay() {
       setRenderRows(rows)
     }
     return subscribeRenderInfo(update)
+  }, [])
+
+  // Worker pool sizes (#506) — polled since pools don't emit change events
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    setPools(getWorkerPoolDiagnostics())
+    const interval = setInterval(() => setPools(getWorkerPoolDiagnostics()), 5_000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // Memory profiling harness (#504)
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    return subscribeMemoryProfiler((s) => setMem(s))
+  }, [])
+
+  // Cache sizes vs. budgets (#678) — polled since caches don't emit change events
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    setCaches(getCacheDiagnostics())
+    const interval = setInterval(() => setCaches(getCacheDiagnostics()), 2_000)
+    return () => clearInterval(interval)
   }, [])
 
   // Keyboard shortcut: Alt+Shift+P
@@ -168,24 +197,58 @@ export const PerformanceOverlay = memo(function PerformanceOverlay() {
         )}
       </div>
 
-      {/* Top render counts */}
-      {renderRows.length > 0 && (
-        <div className="mt-2">
-          <div className="mb-1 text-slate-500">Top renders</div>
-          {renderRows.map((r) => (
-            <div key={r.name} className="flex items-center justify-between gap-2 py-0.5">
-              <span className="max-w-32 truncate text-slate-400" title={r.name}>
-                {r.name}
+      {/* Cache sizes vs. budgets (#678) */}
+      {caches.length > 0 && (
+        <div className="mt-2 border-t border-slate-700 pt-2">
+          <div className="mb-1 text-slate-500">Caches</div>
+          {caches.map((c) => (
+            <div key={c.name} className="flex items-center justify-between gap-2 py-0.5">
+              <span className="text-slate-400" title={c.policy}>
+                {c.name}
               </span>
-              <span className={r.count > 50 ? 'text-amber-400' : 'text-slate-300'}>
-                {r.count}
+              <span className={c.overBudget ? 'font-bold text-red-400' : 'text-slate-300'}>
+                {c.size}/{c.budget}
+                {c.overBudget && <span className="ml-1">⚠</span>}
               </span>
             </div>
           ))}
         </div>
       )}
 
-      <div className="mt-2 text-slate-600">Alt+Shift+P to toggle</div>
+      {/* Worker pool sizes (#506) */}
+      {pools.length > 0 && (
+        <div className="mt-2 border-t border-slate-700 pt-2">
+          <div className="mb-1 text-slate-500">Worker pools</div>
+          {pools.map((p) => (
+            <div key={p.label} className="flex items-center justify-between gap-2 py-0.5">
+              <span className="text-slate-400">{p.label}</span>
+              <span className="text-slate-300">
+                {p.size} {p.lowMemory && <span className="text-amber-400" title="Reduced for low device memory">⚠ low-mem</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Memory profiling harness (#504) */}
+      {mem?.latest && (
+        <div className="mt-2 border-t border-slate-700 pt-2">
+          <div className="mb-1 text-slate-500">Memory ({mem.samples.length} samples)</div>
+          <div className="flex items-center justify-between gap-2 py-0.5">
+            <span className="text-slate-400">DOM nodes</span>
+            <span className="text-slate-300">{mem.latest.domNodeCount ?? '—'}</span>
+          </div>
+          {Object.entries(mem.latest.subsystems).map(([name, count]) => (
+            <div key={name} className="flex items-center justify-between gap-2 py-0.5">
+              <span className="text-slate-400">{name}</span>
+              <span className="text-slate-300">{count}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* RPC health (#505) */}
+      <RpcHealthPanel />
     </aside>
   )
 })

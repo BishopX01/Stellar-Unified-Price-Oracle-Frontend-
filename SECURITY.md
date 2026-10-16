@@ -1,89 +1,65 @@
-# Security Policy
+# Security
 
-## Reporting a Vulnerability
+## Session and token hygiene (auth layer)
 
-If you discover a security vulnerability in this project, please **do not open a
-public GitHub issue**.  Instead, report it privately using one of these channels:
+This document specifies how authentication tokens are issued, stored, rotated, and
+invalidated. The rules below are normative: any change to `src/auth` must keep them
+true, and the accompanying tests enforce the storage rule.
 
-- **GitHub private vulnerability reporting** — use the "Report a vulnerability"
-  button on the [Security tab](../../security/advisories/new) of this repository.
-- **Email** — send details to the maintainers listed in `package.json` (or open a
-  blank private advisory if no email is listed).
+### Storage location
 
-You will receive an acknowledgement within **72 hours** and a resolution timeline
-within **7 days** of the initial report.
+- **Access tokens are held in memory only.** They live in a module-scoped variable
+  inside the auth layer and are never written to `localStorage`, `sessionStorage`,
+  IndexedDB, or any other persistent browser storage.
+- **Refresh tokens are held in an `httpOnly`, `Secure`, `SameSite=Strict` cookie**
+  set by the server. JavaScript must never read or write the refresh token.
+- A test asserts that no token value is ever passed to `localStorage.setItem` or
+  `sessionStorage.setItem`. This test is the enforcement mechanism for the rule
+  above; do not weaken or skip it.
 
----
+### Token lifetime
 
-## Dependency Vulnerability Management
+| Token         | Lifetime | Notes                                              |
+| ------------- | -------- | -------------------------------------------------- |
+| Access token  | 15 min   | Short-lived; re-minted from the refresh token.     |
+| Refresh token | 30 days  | Rotated on every use (see below).                  |
 
-### Automated scanning
+Access tokens are treated as opaque and are discarded on expiry; the client
+requests a new one via the refresh flow rather than extending the old token.
 
-| Tool | Trigger | Purpose |
-|------|---------|---------|
-| `npm audit` in CI | Every push / pull request | Blocks merge on **critical** or **high** findings |
-| Weekly security workflow (`.github/workflows/security.yml`) | Every Monday 08:00 UTC | Full audit report; opens / updates a GitHub issue when critical/high vulns are found |
-| Dependabot (`.github/dependabot.yml`) | Weekly (Monday) | Automatic PRs for patch and minor dependency updates |
+### Refresh and rotation
 
-### Severity thresholds
+- Every successful refresh **rotates** the refresh token: the server issues a new
+  refresh token and invalidates the one that was presented.
+- Rotation is single-use. A refresh token may be redeemed exactly once.
+- The new refresh token is delivered in the same `httpOnly` cookie; the client
+  never handles it directly.
 
-The CI pipeline uses `npm audit --audit-level=high`.  This means:
+### Reuse detection
 
-| Severity | CI behaviour |
-|----------|-------------|
-| **Critical** | ❌ Fails the build immediately |
-| **High** | ❌ Fails the build immediately |
-| **Moderate** | ⚠️ Reported in the audit output but does not fail the build |
-| **Low** | ℹ️ Reported but does not fail the build |
+- If a refresh token that has already been rotated (i.e. already redeemed) is
+  presented again, this is treated as **token reuse**.
+- On detected reuse the server invalidates the entire token family for that
+  session, forcing re-authentication, and clears all client session state.
+- Reuse detection is covered by tests.
 
-### Remediation SLA by severity
+### Logout
 
-The following timelines apply from the point at which a vulnerability is confirmed
-(CVE published and affects a version we use):
+- **Logout** clears all in-memory session state (access token, user/session
+  metadata) and asks the server to invalidate the current refresh token.
+- **Logout everywhere** invalidates every refresh token issued to the user across
+  all devices/sessions, not just the current one. After it completes, no existing
+  refresh token for that user can be redeemed.
+- Both logout paths are covered by tests, including verification that the refresh
+  token is rejected after logout.
 
-| Severity | Target remediation | Maximum deadline |
-|----------|--------------------|-----------------|
-| **Critical** (CVSS ≥ 9.0) | Within **24 hours** | **3 days** |
-| **High** (CVSS 7.0–8.9) | Within **3 days** | **7 days** |
-| **Moderate** (CVSS 4.0–6.9) | Within **2 weeks** | **30 days** |
-| **Low** (CVSS < 4.0) | Next scheduled dependency update | **90 days** |
+### Tests
 
-If a fix is not available within the deadline (e.g. upstream has not yet released a
-patch), the affected dependency must be temporarily replaced with a safe alternative
-or its usage must be removed.  Any exception requires an explicit decision recorded
-in a GitHub issue with the `security` label.
+The auth layer ships tests covering:
 
-### Handling Dependabot PRs
-
-1. **Patch updates** — grouped into a single weekly PR by Dependabot.  Merge after
-   CI passes; no manual review required unless the package is security-sensitive.
-2. **Minor updates** — review the changelog before merging.  Run the test suite
-   locally if the package is a runtime dependency.
-3. **Major updates** — open a separate tracking issue, plan the upgrade, and test
-   thoroughly.  Do not merge automatically.
-4. **Security advisories** — Dependabot will open a PR immediately outside the
-   normal schedule.  Treat as Critical/High per the SLA table above.
-
-### Manual remediation steps
-
-```bash
-# See all current vulnerabilities
-npm audit
-
-# Apply automatic patch-level fixes
-npm audit fix
-
-# See what would change without applying (dry run)
-npm audit fix --dry-run
-
-# Force a breaking-change fix (use with care — review changelog first)
-npm audit fix --force
-```
-
----
-
-## Scope
-
-This policy applies to the frontend application in this repository.  Backend,
-smart contract, and infrastructure security are handled in their respective
-repositories.
+1. **Storage** — tokens are never written to persistent browser storage.
+2. **Expiry** — an expired access token is rejected and triggers refresh.
+3. **Rotation** — a refresh token is single-use and a new one is issued.
+4. **Reuse detection** — replaying a rotated refresh token invalidates the family.
+5. **Logout** — logout clears session state and invalidates the refresh token.
+6. **Logout everywhere** — all refresh tokens for the user are invalidated.

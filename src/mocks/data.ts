@@ -1,14 +1,14 @@
-import type { PriceData, PriceHistoryResponse, PriceProof } from '../types'
+import type { GovernanceProposal, PriceData, PriceHistoryResponse, PriceProof } from '../types'
 import { VALID_PAIRS } from '../types'
+import type { AggregationBreakdown, AggregationMode } from '../types/price'
 import type { OnChainPriceRecord, OracleNetwork } from '../types/onchain'
 import { getContractRegistryEntry } from '../lib/contractRegistry'
 
 const SOURCES = ['chainlink', 'redstone', 'band', 'reflector'] as const
 
-function randomPrice(base: number) {
-  return +(base * (0.98 + Math.random() * 0.04)).toFixed(6)
-}
-
+// Deterministic per-pair fixtures: prices/confidence/sources are fixed so the
+// mock build is stable across runs. Random values made E2E assertions and
+// visual-regression screenshots non-reproducible.
 const BASE_PRICES: Record<string, number> = {
   'XLM/USD': 0.12,
   'BTC/USD': 65000,
@@ -16,13 +16,34 @@ const BASE_PRICES: Record<string, number> = {
   'USDC/USD': 1.0,
 }
 
+const CONFIDENCE: Record<string, number> = {
+  'XLM/USD': 0.97,
+  'BTC/USD': 0.988,
+  'ETH/USD': 0.95,
+  'USDC/USD': 0.96,
+}
+
+const PAIR_SOURCES: Record<string, readonly string[]> = {
+  'XLM/USD': ['chainlink', 'redstone', 'band'],
+  'BTC/USD': ['chainlink', 'redstone'],
+  'ETH/USD': ['band', 'reflector'],
+  'USDC/USD': ['chainlink'],
+}
+
+/** Small deterministic per-pair price offset so sources/history vary slightly. */
+function stablePrice(base: number, seed: number): number {
+  return +(base * (1 + (((seed * 37) % 40) - 20) / 1000)).toFixed(6)
+}
+
+/** Mock pair for the default XLM/USD case to satisfy tree-shaking imports. */
 export function mockPriceData(pair = 'XLM/USD'): PriceData {
+  const seed = pair.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0)
   return {
     assetPair: pair,
-    price: randomPrice(BASE_PRICES[pair] ?? 1),
+    price: stablePrice(BASE_PRICES[pair] ?? 1, seed),
     timestamp: Date.now(),
-    confidence: 0.92 + Math.random() * 0.08,
-    sources: SOURCES.slice(0, 2 + Math.floor(Math.random() * 3)),
+    confidence: CONFIDENCE[pair] ?? 0.95,
+    sources: [...(PAIR_SOURCES[pair] ?? SOURCES.slice(0, 2))],
   }
 }
 
@@ -51,29 +72,236 @@ let mockLedger = 52_000_000
 export function mockOnChainPrice(network: OracleNetwork, asset: string): OnChainPriceRecord {
   const entry = getContractRegistryEntry(network, asset)
   const base = BASE_PRICES_BY_ASSET[entry.asset] ?? 1
-  const publishDelayMs = 15_000 + Math.random() * 4 * 60_000
-  mockLedger += 1 + Math.floor(Math.random() * 3)
+  const publishDelayMs = 15_000 + 90_000 // deterministic
+  const seed = asset.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 7)
+  mockLedger += 2
 
   return {
     asset: entry.asset,
     network: entry.network,
     contractId: entry.contractId,
-    price: randomPrice(base),
+    price: stablePrice(base, seed),
     publishedAt: Date.now() - publishDelayMs,
     ledger: mockLedger,
   }
 }
 
+/**
+ * Simulates the on-chain price-proof payload returned by
+ * `GET /api/prices/:pair/proof` (see {@link PriceProof}). Returns `null` for
+ * unknown pairs so MSW handlers can respond 404 like the real backend does.
+ */
+export function mockPriceProof(pair: string, timestamp: number | undefined = Date.now()): PriceProof | null {
+  const base = BASE_PRICES[pair]
+  if (!base) return null
+  const ts = timestamp ?? Date.now()
+  const seed = pair.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 11)
+  const price = stablePrice(base, seed)
+  const record = mockOnChainPrice('testnet', pair.split('/')[0] ?? pair)
+  return {
+    record: {
+      assetPair: pair,
+      price,
+      priceScaled: String(Math.round(price * 1e7)),
+      priceDecimals: 7,
+      timestamp: ts,
+      confidence: 0.94,
+      sources: [...SOURCES.slice(0, 3)],
+      version: record.ledger,
+    },
+    contributions: SOURCES.slice(0, 3).map((source, i) => ({
+      source,
+      price: price * (1 + (i - 1) * 0.001),
+      timestamp: ts,
+      signature: `deadbeef${i}`.padEnd(64, '0'),
+      publicKey: 'G'.padEnd(56, 'A'),
+    })),
+    aggregateSignature: '0'.repeat(128),
+    contractId: record.contractId,
+    ledgerSequence: record.ledger,
+    transactionHash: '0'.repeat(64),
+    network: 'testnet',
+  }
+}
+
+// ── Governance fixtures ──────────────────────────────────────────────────────
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Deterministic governance fixtures (no `Math.random`) so the mock build and
+ * E2E assertions stay reproducible.
+ *
+ * The set deliberately includes the awkward cases the dashboard must handle
+ * honestly rather than the happy path alone: a proposal still marked `active`
+ * after its deadline, a proposal with no votes cast yet, and proposals whose
+ * quorum / total-voting-power are unreported (`null`).
+ */
+export function mockGovernanceProposals(): GovernanceProposal[] {
+  const now = Date.now()
+  return [
+    {
+      id: 'GOV-0142',
+      title: 'Add Reflector as a primary source for ETH/USD',
+      summary:
+        'Reflector has cleared the reliability bar for three consecutive windows. This promotes it from fallback to a weighted contributor for ETH/USD.',
+      status: 'active',
+      createdAt: now - 3 * DAY_MS,
+      closesAt: now + 2 * DAY_MS,
+      tally: { for: 4_100_000, against: 900_000, abstain: 250_000 },
+      quorum: 3_000_000,
+      totalVotingPower: 12_500_000,
+      category: 'oracle-sources',
+      relatedSources: ['reflector'],
+    },
+    {
+      id: 'GOV-0139',
+      title: 'Reduce Chainlink weight for BTC/USD from 1.0 to 0.8',
+      summary:
+        'Chainlink has driven the largest share of BTC/USD ticks while showing the widest measured divergence. Lower its weight pending a review.',
+      status: 'active',
+      createdAt: now - 12 * DAY_MS,
+      // Deadline passed, but the API still reports this as active — exercises
+      // the "status not yet reconciled" caveat rather than a guessed outcome.
+      closesAt: now - 6 * 60 * 60 * 1000,
+      tally: { for: 2_800_000, against: 2_950_000, abstain: 100_000 },
+      quorum: 3_000_000,
+      totalVotingPower: 12_500_000,
+      category: 'oracle-weights',
+      relatedSources: ['chainlink'],
+    },
+    {
+      id: 'GOV-0131',
+      title: 'Sunset the legacy Band fallback path',
+      summary: 'Band has been superseded by Reflector; retire its fallback route and its contract allowance.',
+      status: 'passed',
+      createdAt: now - 30 * DAY_MS,
+      closesAt: now - 16 * DAY_MS,
+      tally: { for: 6_800_000, against: 1_200_000, abstain: 400_000 },
+      quorum: 3_000_000,
+      totalVotingPower: 12_500_000,
+      category: 'oracle-sources',
+      relatedSources: ['band'],
+    },
+    {
+      id: 'GOV-0127',
+      title: 'Raise the outlier-rejection z-score threshold to 3.0',
+      summary: 'A looser threshold would admit more sources per tick; the community rejected it as too permissive.',
+      status: 'rejected',
+      createdAt: now - 52 * DAY_MS,
+      closesAt: now - 40 * DAY_MS,
+      tally: { for: 1_900_000, against: 5_400_000, abstain: 220_000 },
+      quorum: 3_000_000,
+      totalVotingPower: 12_500_000,
+      category: 'aggregation',
+      relatedSources: [],
+    },
+    {
+      id: 'GOV-0143',
+      title: 'Establish a quarterly source-performance review',
+      summary:
+        'Formalise a recurring review of each oracle source against the published reliability thresholds. Voting has not opened yet.',
+      status: 'pending',
+      createdAt: now - 2 * 60 * 60 * 1000,
+      closesAt: null,
+      // No votes and no reported thresholds: the UI must say "no votes" and
+      // "quorum not reported", never render an invented 0% bar or a fake met.
+      tally: { for: 0, against: 0, abstain: 0 },
+      quorum: null,
+      totalVotingPower: null,
+      category: 'process',
+      relatedSources: [],
+    },
+  ]
+}
+
 export function mockHistory(pair: string, count = 100): PriceHistoryResponse {
   const base = BASE_PRICES[pair] ?? 1
   const now = Date.now()
+  const seed = pair.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0)
   return {
     pair,
     history: Array.from({ length: count }, (_, i) => ({
-      price: randomPrice(base),
+      // Deterministic gentle drift around the base price so charts and
+      // assertions are reproducible across runs.
+      price: +(base * (1 + (((seed + i) % 40) - 20) / 1000)).toFixed(6),
       timestamp: now - (count - i) * 60_000,
-      confidence: 0.9 + Math.random() * 0.1,
-      sources: SOURCES.slice(0, 2),
+      confidence: 0.94,
+      sources: [...(PAIR_SOURCES[pair] ?? SOURCES.slice(0, 2))],
     })),
+  }
+}
+
+/**
+ * Derives a deterministic {@link AggregationBreakdown} from a {@link PriceData}
+ * snapshot (#459).
+ *
+ * Since the REST API does not expose per-source prices or weights, this
+ * function synthesises realistic values:
+ * - Each source receives a price that varies from the aggregate by ±2 %.
+ * - Weights are equal across all active sources (1 / n each), mirroring the
+ *   oracle's default weighted-mean algorithm.
+ * - When `mode === 'outlier_excluded'` the source whose synthesised price
+ *   deviates most from the mean is flagged as excluded and given zero weight.
+ *
+ * @param data   The aggregated price snapshot to expand.
+ * @param mode   Aggregation mode to simulate. Defaults to `'weighted_mean'`.
+ */
+export function computeAggregationBreakdown(
+  data: PriceData,
+  mode: AggregationMode = 'weighted_mean',
+): AggregationBreakdown {
+  const { assetPair, price: aggregatePrice, sources } = data
+  const n = sources.length
+
+  // Synthesise per-source prices with a small seeded variance so the values
+  // are stable across re-renders for the same snapshot.
+  const sourcePrices = sources.map((src, i) => {
+    // Use a simple deterministic hash of the source name + index for variance.
+    const hash = src.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), i * 31)
+    const variance = ((hash % 400) - 200) / 10_000 // –2 % to +2 %
+    return aggregatePrice * (1 + variance)
+  })
+
+  const params: Record<string, unknown> = {}
+  let excluded: boolean[] = sources.map(() => false)
+
+  if (mode === 'outlier_excluded') {
+    // z-score threshold: exclude the source furthest from the mean when its
+    // deviation exceeds the threshold.
+    const zScoreThreshold = 1.5
+    params['zScoreThreshold'] = zScoreThreshold
+    const mean = sourcePrices.reduce((s, p) => s + p, 0) / n
+    const stdDev = Math.sqrt(sourcePrices.reduce((s, p) => s + (p - mean) ** 2, 0) / n)
+    if (stdDev > 0) {
+      const zScores = sourcePrices.map((p) => Math.abs((p - mean) / stdDev))
+      const maxZ = Math.max(...zScores)
+      if (maxZ > zScoreThreshold) {
+        const maxIdx = zScores.indexOf(maxZ)
+        excluded = sources.map((_, i) => i === maxIdx)
+      }
+    }
+  }
+
+  const activeCount = excluded.filter((e) => !e).length || 1
+  const equalWeight = 1 / activeCount
+
+  const items = sources.map((src, i) => ({
+    source: src,
+    price: sourcePrices[i],
+    weight: excluded[i] ? 0 : equalWeight,
+    contribution: excluded[i] ? 0 : sourcePrices[i] * equalWeight,
+    excluded: excluded[i],
+  }))
+
+  // Sort descending by weight (excluded items last).
+  items.sort((a, b) => b.weight - a.weight)
+
+  return {
+    assetPair,
+    mode,
+    params,
+    sources: items,
+    aggregatePrice,
   }
 }

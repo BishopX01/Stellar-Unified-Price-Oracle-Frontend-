@@ -1,9 +1,11 @@
 {
   "name": "stellar-oracle-frontend",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "scripts": {
+    "sdk:build": "tsup --config src/sdk/tsup.config.ts",
+    "sdk:smoke": "node scripts/sdk-smoke.mjs",
     "dev": "vite",
     "dev:https": "HTTPS=true vite",
     "setup-https": "node scripts/setup-https.js",
@@ -32,30 +34,33 @@
     "test:e2e:visual:update": "node scripts/update-visual-baselines.js",
     "test:e2e:mobile": "playwright test --grep @mobile",
     "test:e2e:responsive": "playwright test e2e/responsive.spec.ts e2e/mobile-responsive.spec.ts",
+    "bench:idb": "node scripts/bench-idb.mjs",
     "check:api-version": "node scripts/check-api-version.js",
-    "generate:openapi": "npx openapi-typescript ${BACKEND_OPENAPI_URL:-http://localhost:3000/openapi.json} --output src/api/openapi-types.ts"
+    "generate:openapi": "npx openapi-typescript ${BACKEND_OPENAPI_URL:-http://localhost:3000/openapi.json} --output src/api/openapi-types.ts",
+    "lhci": "npx @lhci/cli@0.14.x autorun --config=.lighthouserc.json"
   },
   "size-limit": [
     {
-      "name": "Main JS (entry)",
+      "name": "Initial JS (entry chunk)",
       "path": "dist/assets/index-*.js",
-      "limit": "200 kB",
+      "limit": "12 kB",
       "brotli": true
     },
     {
       "name": "Total JS (all chunks)",
       "path": "dist/assets/*.js",
-      "limit": "600 kB",
+      "limit": "650 kB",
       "brotli": true
     },
     {
-      "name": "CSS Bundle",
+      "name": "Initial CSS",
       "path": "dist/assets/index-*.css",
-      "limit": "50 kB",
+      "limit": "6 kB",
       "brotli": true
     }
   ],
   "dependencies": {
+    "@sentry/react": "^10.73.0",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^16.2.0",
     "@tanstack/react-query": "^5.0.0",
@@ -76,11 +81,12 @@
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "tsup": "^8.3.0",
     "@axe-core/playwright": "^4.12.1",
     "@commitlint/cli": "19.8.1",
     "@commitlint/config-conventional": "19.8.1",
     "@eslint/js": "^9.39.2",
-    "@playwright/test": "1.52.0",
+    "@playwright/test": "1.63.0",
     "@size-limit/file": "^12.1.0",
     "@storybook/addon-a11y": "^10.5.5",
     "@storybook/addon-themes": "^10.5.5",
@@ -100,6 +106,7 @@
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
     "fake-indexeddb": "^6.2.5",
+    "fast-check": "^4.10.2",
     "globals": "^16.0.0",
     "husky": "^9.1.7",
     "jsdom": "^26.0.0",
